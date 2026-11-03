@@ -100,12 +100,3 @@ func verifiedPage(page int, allowed map[int]bool) *int {
 	}
 	return &page
 }
-
-func extractJSON(s string) string {
-	start := strings.Index(s, "[")
-	end := strings.LastIndex(s, "]")
-	if start != -1 && end > start {
-		return s[start : end+1]
-	}
-	return s
-}

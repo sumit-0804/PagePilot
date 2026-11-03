@@ -1,0 +1,2 @@
+# PDFs contain byte offsets; line-ending conversion would corrupt them.
+*.pdf binary

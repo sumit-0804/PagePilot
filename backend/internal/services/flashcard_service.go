@@ -57,32 +57,36 @@ RULES:
 1. Front must be a clear conceptual question, term, or prompt.
 2. Back must be a concise, precise explanation or definition taken from the excerpts.
 3. citation_page must be the page number shown in the excerpt the card comes from.
-4. Output MUST be a valid JSON array:
-[
-  {
-    "front": "What is...",
-    "back": "It is...",
-    "citation_page": 2
-  }
-]
+4. Output MUST be a JSON object:
+{
+  "cards": [
+    {
+      "front": "What is...",
+      "back": "It is...",
+      "citation_page": 2
+    }
+  ]
+}
 
 EXCERPTS:
 %s`, req.Count, req.Topic, formatExcerpts(excerpts))
 
-	llmResp, err := s.llmClient.Generate(ctx, []rag.ChatMessage{
-		{Role: "system", Content: "You are an expert study flashcard writer. Output strictly a JSON array."},
+	llmResp, err := s.llmClient.GenerateJSON(ctx, []rag.ChatMessage{
+		{Role: "system", Content: "You are an expert study flashcard writer. Respond ONLY with a JSON object."},
 		{Role: "user", Content: prompt},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("flashcard generation failed: %w", err)
 	}
 
-	var generated []struct {
-		Front        string `json:"front"`
-		Back         string `json:"back"`
-		CitationPage int    `json:"citation_page"`
+	var generated struct {
+		Cards []struct {
+			Front        string `json:"front"`
+			Back         string `json:"back"`
+			CitationPage int    `json:"citation_page"`
+		} `json:"cards"`
 	}
-	if err := json.Unmarshal([]byte(extractJSON(llmResp)), &generated); err != nil {
+	if err := json.Unmarshal([]byte(llmResp), &generated); err != nil {
 		return nil, fmt.Errorf("the AI returned flashcards in an unreadable format, please try again: %w", err)
 	}
 
@@ -98,7 +102,7 @@ EXCERPTS:
 		Title:          title,
 		Topic:          req.Topic,
 	}
-	for _, g := range generated {
+	for _, g := range generated.Cards {
 		if strings.TrimSpace(g.Front) == "" || strings.TrimSpace(g.Back) == "" {
 			continue
 		}

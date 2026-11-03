@@ -535,9 +535,8 @@ Suggested endpoints:
 
 ### Quiz
 - POST /api/quizzes/generate
-- POST /api/quizzes/{id}/answer
-- GET /api/quizzes/{id}
-- POST /api/quizzes/{id}/next
+- POST /api/quizzes/{id}/answer (grades on the server and returns the next question)
+- GET /api/quizzes/{id} (resume: current question, score, answered questions)
 
 ### Flashcards
 - POST /api/flashcards/generate

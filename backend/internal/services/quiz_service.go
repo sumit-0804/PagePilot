@@ -104,36 +104,40 @@ CRITICAL GROUNDING RULES:
 3. correct_option must be an integer index from 0 to 3 (0=A, 1=B, 2=C, 3=D).
 4. citation_page must be the page number shown in the excerpt that contains the answer.
 5. Provide a helpful explanation of why the correct option is right and the others are wrong.
-6. Output MUST be a valid JSON array matching this schema:
-[
-  {
-    "question": "Question text here?",
-    "options": ["Option A", "Option B", "Option C", "Option D"],
-    "correct_option": 1,
-    "explanation": "Explanation here",
-    "citation_page": 4,
-    "citation_excerpt": "Relevant sentence from text"
-  }
-]
+6. Output MUST be a JSON object matching this schema:
+{
+  "questions": [
+    {
+      "question": "Question text here?",
+      "options": ["Option A", "Option B", "Option C", "Option D"],
+      "correct_option": 1,
+      "explanation": "Explanation here",
+      "citation_page": 4,
+      "citation_excerpt": "Relevant sentence from text"
+    }
+  ]
+}
 
 EXCERPTS:
 %s`, req.NumQuestions, req.Topic, req.Difficulty, formatExcerpts(excerpts))
 
-	llmResp, err := s.llmClient.Generate(ctx, []rag.ChatMessage{
-		{Role: "system", Content: "You are an expert exam creator. Respond ONLY with a valid JSON array."},
+	llmResp, err := s.llmClient.GenerateJSON(ctx, []rag.ChatMessage{
+		{Role: "system", Content: "You are an expert exam creator. Respond ONLY with a JSON object."},
 		{Role: "user", Content: prompt},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("quiz generation failed: %w", err)
 	}
 
-	var generated []generatedQuestion
-	if err := json.Unmarshal([]byte(extractJSON(llmResp)), &generated); err != nil {
+	var generated struct {
+		Questions []generatedQuestion `json:"questions"`
+	}
+	if err := json.Unmarshal([]byte(llmResp), &generated); err != nil {
 		return nil, fmt.Errorf("the AI returned a quiz in an unreadable format, please try again: %w", err)
 	}
 
 	var questions []models.QuizQuestion
-	for _, g := range generated {
+	for _, g := range generated.Questions {
 		if g.Question == "" || len(g.Options) != 4 || g.CorrectOption < 0 || g.CorrectOption > 3 {
 			continue // skip malformed questions rather than store something ungradeable
 		}
