@@ -137,19 +137,23 @@ func (s *ProgressService) Get(ctx context.Context, userID, docID string) (*Progr
 func recommend(p *ProgressResponse) []string {
 	recs := []string{}
 	for _, w := range p.WeakAreas {
-		recs = append(recs, fmt.Sprintf("Review page %d: you missed %d of %d questions about it.", w.Page, w.Missed, w.Attempted))
+		recs = append(recs, fmt.Sprintf("Review page %d: you missed %d of %d %s about it.", w.Page, w.Missed, w.Attempted, plural(w.Attempted, "question", "questions")))
 	}
 	for _, t := range p.WeakTopics {
 		recs = append(recs, fmt.Sprintf("Retake a quiz on %q, you scored under %d%% last time.", t, weakQuizScorePct))
 	}
 	if p.Flashcards.Practice > 0 {
-		recs = append(recs, fmt.Sprintf("Practice the %d flashcards marked Need Practice.", p.Flashcards.Practice))
+		recs = append(recs, fmt.Sprintf("Practice the %d %s marked Need Practice.", p.Flashcards.Practice, plural(p.Flashcards.Practice, "flashcard", "flashcards")))
 	}
-	if p.QuizzesInProgress > 0 {
-		recs = append(recs, fmt.Sprintf("Finish your %d unfinished quiz(zes).", p.QuizzesInProgress))
+	switch p.QuizzesInProgress {
+	case 0:
+	case 1:
+		recs = append(recs, "Finish the quiz you started.")
+	default:
+		recs = append(recs, fmt.Sprintf("Finish the %d quizzes you started.", p.QuizzesInProgress))
 	}
 	switch {
-	case p.QuizzesCompleted == 0:
+	case p.QuizzesCompleted == 0 && p.QuizzesInProgress == 0:
 		recs = append(recs, "Take a quiz to check your understanding.")
 	case p.AverageScorePct >= 80 && len(p.WeakAreas) == 0:
 		recs = append(recs, "You're doing well: try a hard quiz or short-answer questions.")
@@ -158,4 +162,11 @@ func recommend(p *ProgressResponse) []string {
 		recs = append(recs, "Create flashcards to practise active recall.")
 	}
 	return recs
+}
+
+func plural(n int, one, many string) string {
+	if n == 1 {
+		return one
+	}
+	return many
 }

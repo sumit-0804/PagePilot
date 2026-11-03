@@ -1,109 +1,67 @@
 import { create } from 'zustand'
-import type { Conversation, Document, FlashcardSet, QuizSession } from '../types'
+import { createJSONStorage, persist } from 'zustand/middleware'
+import type { ExplanationStyle } from '@/types'
 
-interface StudyStore {
-  documents: Document[]
-  activeDocumentId: string | null
-  conversations: Conversation[]
-  activeConversationId: string | null
-  
-  // PDF Viewer State
-  isPdfViewerOpen: boolean
-  targetPdfPage: number
-  
-  // Active Interactive Sessions
-  activeQuiz: QuizSession | null
-  activeFlashcards: FlashcardSet | null
-  
-  // UI Theme
-  isDarkMode: boolean
-  isSidebarOpen: boolean
-
-  // Actions
-  setDocuments: (docs: Document[]) => void
-  addDocument: (doc: Document) => void
-  removeDocument: (docId: string) => void
-  updateDocumentStatus: (docId: string, status: Document['status'], pageCount?: number, errorMsg?: string) => void
-  setActiveDocumentId: (id: string | null) => void
-  
-  setConversations: (convs: Conversation[]) => void
-  addConversation: (conv: Conversation) => void
-  removeConversation: (convId: string) => void
-  setActiveConversationId: (id: string | null) => void
-  
-  setPdfViewerOpen: (open: boolean) => void
-  jumpToPdfPage: (page: number) => void
-  
-  setActiveQuiz: (quiz: QuizSession | null) => void
-  setActiveFlashcards: (set: FlashcardSet | null) => void
-  
-  toggleDarkMode: () => void
-  toggleSidebar: () => void
+interface PdfTarget {
+  documentId: string
+  page: number
+  /** True when opened from a citation, so the viewer marks the cited page. */
+  fromCitation: boolean
+  /** Changes on every open so clicking the same citation twice still jumps. */
+  nonce: number
 }
 
-export const useStudyStore = create<StudyStore>((set) => ({
-  documents: [],
-  activeDocumentId: null,
-  conversations: [],
-  activeConversationId: null,
-  
-  isPdfViewerOpen: false,
-  targetPdfPage: 1,
-  
-  activeQuiz: null,
-  activeFlashcards: null,
-  
-  isDarkMode: false,
-  isSidebarOpen: true,
+interface PendingMessage {
+  conversationId: string
+  text: string
+  style?: ExplanationStyle
+}
 
-  setDocuments: (documents) => set({ documents }),
-  addDocument: (doc) => set((state) => ({ documents: [doc, ...state.documents] })),
-  removeDocument: (docId) =>
-    set((state) => ({
-      documents: state.documents.filter((d) => d.id !== docId),
-      activeDocumentId: state.activeDocumentId === docId ? null : state.activeDocumentId,
-    })),
-  updateDocumentStatus: (docId, status, pageCount, errorMsg) =>
-    set((state) => ({
-      documents: state.documents.map((d) => {
-        if (d.id === docId) {
-          return {
-            ...d,
-            status,
-            page_count: pageCount !== undefined ? pageCount : d.page_count,
-            error_message: errorMsg !== undefined ? errorMsg : d.error_message,
-          }
-        }
-        return d
-      }),
-    })),
-  setActiveDocumentId: (activeDocumentId) => set({ activeDocumentId }),
+interface StudyState {
+  /** Desktop sidebar; remembered between visits. */
+  sidebarOpen: boolean
+  setSidebarOpen: (open: boolean) => void
+  /** Phone menu overlay; always starts closed. */
+  mobileNavOpen: boolean
+  setMobileNavOpen: (open: boolean) => void
 
-  setConversations: (conversations) => set({ conversations }),
-  addConversation: (conv) => set((state) => ({ conversations: [conv, ...state.conversations] })),
-  removeConversation: (convId) =>
-    set((state) => ({
-      conversations: state.conversations.filter((c) => c.id !== convId),
-      activeConversationId: state.activeConversationId === convId ? null : state.activeConversationId,
-    })),
-  setActiveConversationId: (activeConversationId) => set({ activeConversationId }),
+  pdf: PdfTarget | null
+  openPdf: (documentId: string, page?: number, fromCitation?: boolean) => void
+  closePdf: () => void
 
-  setPdfViewerOpen: (isPdfViewerOpen) => set({ isPdfViewerOpen }),
-  jumpToPdfPage: (page) => set({ targetPdfPage: page, isPdfViewerOpen: true }),
+  /** Explanation style applied to every question unless one is picked in the composer. */
+  defaultStyle: ExplanationStyle | ''
+  setDefaultStyle: (style: ExplanationStyle | '') => void
 
-  setActiveQuiz: (activeQuiz) => set({ activeQuiz }),
-  setActiveFlashcards: (activeFlashcards) => set({ activeFlashcards }),
+  /** First message typed on a document page, sent once its new conversation opens. */
+  pendingMessage: PendingMessage | null
+  setPendingMessage: (message: PendingMessage | null) => void
+}
 
-  toggleDarkMode: () => {
-    set((state) => {
-      const next = !state.isDarkMode
-      if (next) {
-        document.documentElement.classList.add('dark')
-      } else {
-        document.documentElement.classList.remove('dark')
-      }
-      return { isDarkMode: next }
-    })
-  },
-  toggleSidebar: () => set((state) => ({ isSidebarOpen: !state.isSidebarOpen })),
-}))
+export const useStudyStore = create<StudyState>()(
+  persist(
+    (set) => ({
+      sidebarOpen: true,
+      setSidebarOpen: (sidebarOpen) => set({ sidebarOpen }),
+      mobileNavOpen: false,
+      setMobileNavOpen: (mobileNavOpen) => set({ mobileNavOpen }),
+
+      pdf: null,
+      openPdf: (documentId, page = 1, fromCitation = false) =>
+        set({ pdf: { documentId, page, fromCitation, nonce: Date.now() } }),
+      closePdf: () => set({ pdf: null }),
+
+      defaultStyle: '',
+      setDefaultStyle: (defaultStyle) => set({ defaultStyle }),
+
+      pendingMessage: null,
+      setPendingMessage: (pendingMessage) => set({ pendingMessage }),
+    }),
+    {
+      name: 'pagepilot-ui',
+      storage: createJSONStorage(() => localStorage),
+      // Only preferences survive a reload; the PDF panel and pending messages are per-visit.
+      partialize: (state) => ({ sidebarOpen: state.sidebarOpen, defaultStyle: state.defaultStyle }),
+    },
+  ),
+)

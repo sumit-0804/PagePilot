@@ -1,273 +1,169 @@
+import { supabase } from '@/lib/supabase'
 import type {
   AnswerFeedback,
+  ChatDoneEvent,
+  Citation,
   Conversation,
-  Document,
+  DocumentStatusResponse,
+  ExplanationStyle,
   FlashcardSet,
+  CardStatus,
   Message,
+  Progress,
+  QuestionType,
   QuizSession,
+  StudyDocument,
   SummaryResponse,
-} from '../types'
+} from '@/types'
 
-const API_BASE = '/api'
+const API_BASE = (import.meta.env.VITE_API_URL || '/api').replace(/\/$/, '')
+
+export class ApiError extends Error {
+  readonly status: number
+  constructor(status: number, message: string) {
+    super(message)
+    this.status = status
+  }
+}
+
+async function authHeader(): Promise<Record<string, string>> {
+  // getSession refreshes an expired access token when needed.
+  const { data } = await supabase.auth.getSession()
+  const token = data.session?.access_token
+  return token ? { Authorization: `Bearer ${token}` } : {}
+}
+
+async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+  const headers: Record<string, string> = { ...(await authHeader()), ...(init.headers as Record<string, string>) }
+  if (init.body && !(init.body instanceof FormData)) headers['Content-Type'] = 'application/json'
+
+  let res: Response
+  try {
+    res = await fetch(API_BASE + path, { ...init, headers })
+  } catch {
+    throw new ApiError(0, "Can't reach the PagePilot server. Check that the backend is running.")
+  }
+  const text = await res.text()
+  const body = text ? safeJSON(text) : null
+  if (!res.ok) throw new ApiError(res.status, errorMessage(body, `Request failed (${res.status})`))
+  return body as T
+}
+
+function safeJSON(text: string): unknown {
+  try {
+    return JSON.parse(text)
+  } catch {
+    return text
+  }
+}
+
+/** The API reports errors as {"error": "..."}. */
+function errorMessage(body: unknown, fallback: string): string {
+  if (body && typeof body === 'object' && 'error' in body && typeof body.error === 'string') return body.error
+  return fallback
+}
+
+const json = (body: unknown) => JSON.stringify(body)
+
+export interface StreamHandlers {
+  onToken: (token: string) => void
+  signal?: AbortSignal
+}
+
+/** Sends a chat message and streams the reply over SSE. Resolves with the final "done" event. */
+async function streamChat(
+  body: { conversation_id: string; message: string; style?: ExplanationStyle },
+  { onToken, signal }: StreamHandlers,
+): Promise<ChatDoneEvent> {
+  const res = await fetch(`${API_BASE}/chat`, {
+    method: 'POST',
+    headers: { ...(await authHeader()), 'Content-Type': 'application/json', Accept: 'text/event-stream' },
+    body: json({ ...body, stream: true }),
+    signal,
+  })
+  if (!res.ok || !res.body) {
+    throw new ApiError(res.status, errorMessage(safeJSON(await res.text()), `Chat failed (${res.status})`))
+  }
+
+  const reader = res.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+    const events = buffer.split('\n\n')
+    buffer = events.pop() ?? ''
+    for (const event of events) {
+      // Lines starting with ":" are heartbeat comments.
+      const data = event.split('\n').find((line) => line.startsWith('data:'))
+      if (!data) continue
+      const payload = JSON.parse(data.slice(5))
+      if (payload.type === 'token') onToken(payload.content)
+      else if (payload.type === 'error') throw new ApiError(500, payload.error)
+      else if (payload.type === 'done') return payload as ChatDoneEvent
+    }
+  }
+  throw new ApiError(500, 'The answer stream ended unexpectedly. Please try again.')
+}
 
 export const api = {
-  // Documents
-  async getDocuments(): Promise<Document[]> {
-    const res = await fetch(`${API_BASE}/documents`)
-    if (!res.ok) throw new Error('Failed to fetch documents')
-    return res.json()
+  documents: {
+    list: () => request<StudyDocument[]>('/documents'),
+    get: (id: string) => request<StudyDocument>(`/documents/${id}`),
+    status: (id: string) => request<DocumentStatusResponse>(`/documents/${id}/status`),
+    upload: (file: File) => {
+      const form = new FormData()
+      form.append('file', file)
+      return request<StudyDocument>('/documents/upload', { method: 'POST', body: form })
+    },
+    fileUrl: (id: string) => request<{ url: string }>(`/documents/${id}/file`),
+    remove: (id: string) => request<void>(`/documents/${id}`, { method: 'DELETE' }),
   },
-
-  async uploadDocument(file: File): Promise<Document> {
-    const formData = new FormData()
-    formData.append('file', file)
-    formData.append('user_id', 'default_user')
-
-    const res = await fetch(`${API_BASE}/documents/upload`, {
-      method: 'POST',
-      body: formData,
-    })
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({ error: 'Upload failed' }))
-      throw new Error(err.error || 'Upload failed')
-    }
-    return res.json()
+  conversations: {
+    list: () => request<Conversation[]>('/conversations'),
+    get: (id: string) => request<Conversation>(`/conversations/${id}`),
+    create: (documentId: string) => request<Conversation>('/conversations', { method: 'POST', body: json({ document_id: documentId }) }),
+    remove: (id: string) => request<void>(`/conversations/${id}`, { method: 'DELETE' }),
   },
-
-  async getDocument(id: string): Promise<Document> {
-    const res = await fetch(`${API_BASE}/documents/${id}`)
-    if (!res.ok) throw new Error('Failed to fetch document')
-    return res.json()
+  chat: {
+    stream: streamChat,
   },
-
-  async getDocumentStatus(id: string): Promise<{ id: string; status: Document['status']; error_message?: string; page_count: number }> {
-    const res = await fetch(`${API_BASE}/documents/${id}/status`)
-    if (!res.ok) throw new Error('Failed to fetch document status')
-    return res.json()
+  quizzes: {
+    get: (id: string) => request<QuizSession>(`/quizzes/${id}`),
+    generate: (body: { document_id: string; topic?: string; difficulty?: string; num_questions?: number; question_types?: QuestionType[] }) =>
+      request<QuizSession>('/quizzes/generate', { method: 'POST', body: json(body) }),
+    answer: (sessionId: string, body: { question_id: string; selected_option?: number; answer_text?: string }) =>
+      request<AnswerFeedback>(`/quizzes/${sessionId}/answer`, { method: 'POST', body: json(body) }),
   },
-
-  async deleteDocument(id: string): Promise<void> {
-    const res = await fetch(`${API_BASE}/documents/${id}`, { method: 'DELETE' })
-    if (!res.ok) throw new Error('Failed to delete document')
+  flashcards: {
+    get: (id: string) => request<FlashcardSet>(`/flashcards/${id}`),
+    setCardStatus: (cardId: string, status: CardStatus) =>
+      request<void>(`/flashcards/cards/${cardId}`, { method: 'PATCH', body: json({ status }) }),
   },
-
-  getDocumentFileUrl(id: string): string {
-    return `${API_BASE}/documents/${id}/file`
+  summaries: {
+    generate: (body: { document_id: string; type?: string; topic?: string; refresh?: boolean }) =>
+      request<SummaryResponse>('/summaries/generate', { method: 'POST', body: json(body) }),
   },
-
-  // Conversations
-  async getConversations(): Promise<Conversation[]> {
-    const res = await fetch(`${API_BASE}/conversations`)
-    if (!res.ok) throw new Error('Failed to fetch conversations')
-    return res.json()
+  progress: {
+    get: (documentId: string) => request<Progress>(`/progress?document_id=${encodeURIComponent(documentId)}`),
   },
+}
 
-  async createConversation(documentId?: string, title?: string): Promise<Conversation> {
-    const res = await fetch(`${API_BASE}/conversations`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        user_id: 'default_user',
-        document_id: documentId,
-        title: title || 'New Study Session',
-      }),
-    })
-    if (!res.ok) throw new Error('Failed to create conversation')
-    return res.json()
-  },
+export function parseCitations(message: Message): Citation[] {
+  if (!message.citations_json) return []
+  try {
+    return JSON.parse(message.citations_json) as Citation[]
+  } catch {
+    return []
+  }
+}
 
-  async getConversation(id: string): Promise<Conversation> {
-    const res = await fetch(`${API_BASE}/conversations/${id}`)
-    if (!res.ok) throw new Error('Failed to fetch conversation')
-    const data = await res.json()
-    // Parse citations_json on messages
-    if (data.messages) {
-      data.messages = data.messages.map((m: Message) => {
-        if (m.citations_json) {
-          try {
-            m.citations = JSON.parse(m.citations_json)
-          } catch {
-            m.citations = []
-          }
-        }
-        return m
-      })
-    }
-    return data
-  },
-
-  async deleteConversation(id: string): Promise<void> {
-    const res = await fetch(`${API_BASE}/conversations/${id}`, { method: 'DELETE' })
-    if (!res.ok) throw new Error('Failed to delete conversation')
-  },
-
-  // Streaming Chat via SSE
-  async sendStreamingMessage(
-    conversationId: string,
-    message: string,
-    documentId?: string,
-    onToken?: (token: string) => void,
-    onDone?: (result: { assistant_message: Message; citations: any[] }) => void,
-    onError?: (err: Error) => void
-  ): Promise<void> {
-    try {
-      const response = await fetch(`${API_BASE}/chat`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Accept: 'text/event-stream',
-        },
-        body: JSON.stringify({
-          conversation_id: conversationId,
-          document_id: documentId,
-          message,
-          stream: true,
-        }),
-      })
-
-      if (!response.ok) {
-        throw new Error(`Chat request failed with status ${response.status}`)
-      }
-
-      const reader = response.body?.getReader()
-      if (!reader) throw new Error('ReadableStream not supported')
-
-      const decoder = new TextDecoder('utf-8')
-      let buffer = ''
-
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-
-        buffer += decoder.decode(value, { stream: true })
-        const lines = buffer.split('\n\n')
-        buffer = lines.pop() || ''
-
-        for (const block of lines) {
-          const trimmed = block.trim()
-          if (!trimmed.startsWith('data:')) continue
-
-          const jsonStr = trimmed.replace(/^data:\s*/, '')
-          try {
-            const data = JSON.parse(jsonStr)
-            if (data.type === 'token' && onToken) {
-              onToken(data.content)
-            } else if (data.type === 'done' && onDone) {
-              onDone(data)
-            } else if (data.type === 'error' && onError) {
-              onError(new Error(data.error))
-            }
-          } catch (e) {
-            console.error('SSE JSON parse error:', e, jsonStr)
-          }
-        }
-      }
-    } catch (err) {
-      if (onError && err instanceof Error) onError(err)
-      else throw err
-    }
-  },
-
-  // Quizzes
-  async generateQuiz(
-    documentId: string,
-    topic: string = '',
-    difficulty: string = 'medium',
-    numQuestions: number = 5,
-    conversationId?: string
-  ): Promise<QuizSession> {
-    const res = await fetch(`${API_BASE}/quizzes/generate`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        document_id: documentId,
-        user_id: 'default_user',
-        conversation_id: conversationId,
-        topic,
-        difficulty,
-        num_questions: numQuestions,
-      }),
-    })
-    if (!res.ok) throw new Error('Failed to generate quiz')
-    return res.json()
-  },
-
-  async getQuiz(sessionId: string): Promise<QuizSession> {
-    const res = await fetch(`${API_BASE}/quizzes/${sessionId}`)
-    if (!res.ok) throw new Error('Failed to fetch quiz')
-    return res.json()
-  },
-
-  async answerQuiz(
-    sessionId: string,
-    questionId: string,
-    selectedOption: number
-  ): Promise<AnswerFeedback> {
-    const res = await fetch(`${API_BASE}/quizzes/${sessionId}/answer`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        question_id: questionId,
-        selected_option: selectedOption,
-      }),
-    })
-    if (!res.ok) throw new Error('Failed to submit answer')
-    return res.json()
-  },
-
-  // Flashcards
-  async generateFlashcards(
-    documentId: string,
-    topic: string = '',
-    count: number = 6,
-    conversationId?: string
-  ): Promise<FlashcardSet> {
-    const res = await fetch(`${API_BASE}/flashcards/generate`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        document_id: documentId,
-        user_id: 'default_user',
-        conversation_id: conversationId,
-        topic,
-        count,
-      }),
-    })
-    if (!res.ok) throw new Error('Failed to generate flashcards')
-    return res.json()
-  },
-
-  async getFlashcardSet(setId: string): Promise<FlashcardSet> {
-    const res = await fetch(`${API_BASE}/flashcards/${setId}`)
-    if (!res.ok) throw new Error('Failed to fetch flashcard set')
-    return res.json()
-  },
-
-  async updateFlashcardStatus(cardId: string, status: 'known' | 'practice' | 'new'): Promise<void> {
-    const res = await fetch(`${API_BASE}/flashcards/${cardId}/status`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ status }),
-    })
-    if (!res.ok) throw new Error('Failed to update flashcard status')
-  },
-
-  // Summaries
-  async generateSummary(
-    documentId: string,
-    type: string = 'complete',
-    topic: string = ''
-  ): Promise<SummaryResponse> {
-    const res = await fetch(`${API_BASE}/summaries/generate`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        document_id: documentId,
-        type,
-        topic,
-      }),
-    })
-    if (!res.ok) throw new Error('Failed to generate summary')
-    return res.json()
-  },
+export function parseMetadata(message: Message): Record<string, string> {
+  if (!message.metadata_json) return {}
+  try {
+    return JSON.parse(message.metadata_json) as Record<string, string>
+  } catch {
+    return {}
+  }
 }

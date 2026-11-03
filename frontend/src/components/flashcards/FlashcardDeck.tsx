@@ -1,171 +1,113 @@
-import React, { useState } from 'react'
-import {
-  ChevronLeft,
-  ChevronRight,
-  RotateCcw,
-  Check,
-  Bookmark,
-  BookOpen,
-  Sparkles,
-} from 'lucide-react'
-import type { FlashcardSet } from '../../types'
-import { api } from '../../services/api'
+import { useState } from 'react'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { ChevronLeft, ChevronRight, RotateCcw } from 'lucide-react'
+import { api } from '@/services/api'
+import { queryKeys } from '@/hooks/queries'
+import { Button } from '@/components/ui/button'
+import { Skeleton } from '@/components/ui/skeleton'
+import { CitationChip } from '@/components/chat/CitationChip'
+import { cn } from '@/lib/utils'
+import type { CardStatus, FlashcardSet } from '@/types'
 
-interface FlashcardDeckProps {
-  flashcardSet: FlashcardSet
-  onSelectPage: (page: number) => void
-}
+/** A flashcard set inside the chat: flip to reveal, step through, and mark what you know. */
+export function FlashcardDeck({ setId, documentId }: { setId: string; documentId: string }) {
+  const queryClient = useQueryClient()
+  const set = useQuery({ queryKey: queryKeys.flashcards(setId), queryFn: () => api.flashcards.get(setId) })
+  const [index, setIndex] = useState(0)
+  const [flipped, setFlipped] = useState(false)
 
-export const FlashcardDeck: React.FC<FlashcardDeckProps> = ({
-  flashcardSet,
-  onSelectPage,
-}) => {
-  const [currentIndex, setCurrentIndex] = useState<number>(0)
-  const [isFlipped, setIsFlipped] = useState<boolean>(false)
-  const [cards, setCards] = useState(flashcardSet.cards || [])
-
-  const currentCard = cards[currentIndex]
-
-  const handleNext = () => {
-    setIsFlipped(false)
-    setCurrentIndex((prev) => (prev + 1 < cards.length ? prev + 1 : 0))
-  }
-
-  const handlePrev = () => {
-    setIsFlipped(false)
-    setCurrentIndex((prev) => (prev > 0 ? prev - 1 : cards.length - 1))
-  }
-
-  const handleMarkStatus = async (status: 'known' | 'practice') => {
-    if (!currentCard) return
-    try {
-      await api.updateFlashcardStatus(currentCard.id, status)
-      setCards((prev) =>
-        prev.map((c, i) => (i === currentIndex ? { ...c, status } : c))
+  const mark = useMutation({
+    mutationFn: ({ cardId, status }: { cardId: string; status: CardStatus }) => api.flashcards.setCardStatus(cardId, status),
+    onMutate: ({ cardId, status }) => {
+      queryClient.setQueryData<FlashcardSet>(queryKeys.flashcards(setId), (old) =>
+        old && { ...old, cards: old.cards.map((c) => (c.id === cardId ? { ...c, status } : c)) },
       )
-      handleNext()
-    } catch (e) {
-      console.error('Failed to update status', e)
-    }
+    },
+    onError: () => void queryClient.invalidateQueries({ queryKey: queryKeys.flashcards(setId) }),
+    onSettled: () => void queryClient.invalidateQueries({ queryKey: queryKeys.progress(documentId) }),
+  })
+
+  if (set.isLoading) {
+    return <Skeleton className="h-56 w-full rounded-xl" aria-label="Loading flashcards" />
+  }
+  if (set.error || !set.data) {
+    return (
+      <p role="alert" className="text-sm text-destructive">
+        {set.error?.message ?? 'Flashcards not found.'}
+      </p>
+    )
   }
 
-  if (!currentCard || cards.length === 0) {
-    return null
+  const cards = set.data.cards
+  const card = cards[Math.min(index, cards.length - 1)]
+  if (!card) return <p className="text-sm text-muted-foreground">This set has no cards.</p>
+  const known = cards.filter((c) => c.status === 'known').length
+  const practice = cards.filter((c) => c.status === 'practice').length
+
+  const go = (delta: number) => {
+    setFlipped(false)
+    setIndex((i) => (i + delta + cards.length) % cards.length)
+  }
+  const setStatus = (status: CardStatus) => {
+    mark.mutate({ cardId: card.id, status })
+    if (index < cards.length - 1) go(1)
   }
 
   return (
-    <div className="bg-slate-900/90 border border-indigo-500/30 rounded-2xl p-5 my-4 shadow-xl backdrop-blur-md max-w-xl mx-auto">
-      {/* Header */}
-      <div className="flex items-center justify-between pb-3 mb-4 border-b border-slate-800 text-xs">
-        <div className="flex items-center space-x-2 text-indigo-400 font-semibold uppercase tracking-wider">
-          <Sparkles className="w-3.5 h-3.5" />
-          <span>Flashcard Revision</span>
-        </div>
-        <div className="font-mono text-slate-400 bg-slate-800 px-2.5 py-0.5 rounded-full">
-          Card {currentIndex + 1} of {cards.length}
-        </div>
+    <div className="rounded-xl border bg-background p-4 sm:p-5">
+      <div className="flex items-center justify-between text-sm">
+        <span className="font-semibold">
+          Card {index + 1} of {cards.length}
+        </span>
+        <span className="text-muted-foreground">
+          {known} known, {practice} to practise
+        </span>
       </div>
 
-      {/* 3D Flip Card */}
-      <div
-        onClick={() => setIsFlipped(!isFlipped)}
-        className="w-full h-64 cursor-pointer perspective-1000 mb-4 select-none"
-      >
-        <div
-          className={`relative w-full h-full duration-500 transform-style-3d transition-transform ${
-            isFlipped ? 'rotate-y-180' : ''
-          }`}
+      <div className="card-3d mt-3">
+        <button
+          type="button"
+          onClick={() => setFlipped((f) => !f)}
+          aria-label={flipped ? 'Show the question' : 'Show the answer'}
+          data-flipped={flipped}
+          className="card-3d-inner relative block h-56 w-full text-left"
         >
-          {/* Front (Question / Concept) */}
-          <div className="absolute inset-0 backface-hidden bg-gradient-to-br from-slate-800 to-slate-850 border border-slate-700/80 rounded-2xl p-6 flex flex-col justify-between shadow-lg">
-            <div className="flex items-center justify-between text-xs text-indigo-400 font-medium">
-              <span>CONCEPT / QUESTION</span>
-              <span className="text-[11px] text-slate-400">Click to flip</span>
-            </div>
-            <div className="text-base font-semibold text-white text-center leading-relaxed">
-              {currentCard.front}
-            </div>
-            <div className="flex items-center justify-between text-xs text-slate-500">
-              <span className="capitalize text-indigo-300">{flashcardSet.topic || 'Document'}</span>
-              {currentCard.citation_page > 0 && (
-                <span className="text-slate-400">Page {currentCard.citation_page}</span>
-              )}
-            </div>
-          </div>
-
-          {/* Back (Answer / Explanation) */}
-          <div className="absolute inset-0 backface-hidden rotate-y-180 bg-gradient-to-br from-indigo-950/80 to-slate-900 border border-indigo-500/50 rounded-2xl p-6 flex flex-col justify-between shadow-lg">
-            <div className="flex items-center justify-between text-xs text-emerald-400 font-medium">
-              <span>EXPLANATION / ANSWER</span>
-              <span className="text-[11px] text-slate-400">Click to flip</span>
-            </div>
-            <div className="text-sm text-slate-200 overflow-y-auto max-h-40 text-center leading-relaxed font-normal">
-              {currentCard.back}
-            </div>
-            <div className="flex items-center justify-between text-xs pt-2 border-t border-slate-800">
-              {currentCard.citation_page > 0 ? (
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    onSelectPage(currentCard.citation_page)
-                  }}
-                  className="inline-flex items-center space-x-1 text-indigo-400 hover:text-indigo-300 font-medium"
-                >
-                  <BookOpen className="w-3.5 h-3.5" />
-                  <span>View Page {currentCard.citation_page}</span>
-                </button>
-              ) : (
-                <span />
-              )}
-              <span className="text-slate-400">Card {currentIndex + 1}</span>
-            </div>
-          </div>
-        </div>
+          <span className="card-3d-face absolute inset-0 flex flex-col rounded-xl border bg-card p-5">
+            <span className="text-sm text-muted-foreground">Question</span>
+            <span className="my-auto font-reading text-xl leading-snug font-medium">{card.front}</span>
+            <span className="text-xs text-muted-foreground">Click or press Enter to flip</span>
+          </span>
+          <span className="card-3d-face card-3d-back absolute inset-0 flex flex-col overflow-auto rounded-xl border border-primary/40 bg-card p-5">
+            <span className="text-sm text-muted-foreground">Answer</span>
+            <span className="my-auto font-reading text-lg leading-relaxed">{card.back}</span>
+          </span>
+        </button>
       </div>
 
-      {/* Mastery Controls */}
-      <div className="flex items-center justify-between pt-2">
-        <button
-          onClick={handlePrev}
-          className="p-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 transition"
-          title="Previous card"
-        >
-          <ChevronLeft className="w-4 h-4" />
-        </button>
-
-        <div className="flex items-center space-x-2">
-          <button
-            onClick={() => handleMarkStatus('practice')}
-            className={`flex items-center space-x-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold border transition ${
-              currentCard.status === 'practice'
-                ? 'bg-amber-500/20 text-amber-300 border-amber-500/50'
-                : 'bg-slate-800 text-slate-300 border-slate-700 hover:bg-amber-500/10 hover:text-amber-300'
-            }`}
-          >
-            <Bookmark className="w-3.5 h-3.5" />
-            <span>Need Practice</span>
-          </button>
-
-          <button
-            onClick={() => handleMarkStatus('known')}
-            className={`flex items-center space-x-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold border transition ${
-              currentCard.status === 'known'
-                ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/50'
-                : 'bg-slate-800 text-slate-300 border-slate-700 hover:bg-emerald-500/10 hover:text-emerald-300'
-            }`}
-          >
-            <Check className="w-3.5 h-3.5" />
-            <span>Known</span>
-          </button>
-        </div>
-
-        <button
-          onClick={handleNext}
-          className="p-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 transition"
-          title="Next card"
-        >
-          <ChevronRight className="w-4 h-4" />
-        </button>
+      <div className="mt-3 flex flex-wrap items-center gap-2">
+        <Button variant="ghost" size="icon-sm" aria-label="Previous card" onClick={() => go(-1)}>
+          <ChevronLeft />
+        </Button>
+        <Button variant="ghost" size="icon-sm" aria-label="Next card" onClick={() => go(1)}>
+          <ChevronRight />
+        </Button>
+        {card.citation_page && <CitationChip documentId={documentId} page={card.citation_page} />}
+        <span className="flex-1" />
+        {flipped ? (
+          <>
+            <Button variant="outline" size="sm" className={cn(card.status === 'practice' && 'border-destructive text-destructive')} onClick={() => setStatus('practice')}>
+              Need practice
+            </Button>
+            <Button variant="outline" size="sm" className={cn(card.status === 'known' && 'border-success text-success')} onClick={() => setStatus('known')}>
+              Known
+            </Button>
+          </>
+        ) : (
+          <Button variant="outline" size="sm" onClick={() => setFlipped(true)}>
+            <RotateCcw />
+            Show answer
+          </Button>
+        )}
       </div>
     </div>
   )
