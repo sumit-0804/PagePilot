@@ -66,6 +66,7 @@ func SetupRouter(api *API, verifier *auth.Verifier, allowedOrigins []string) htt
 			})
 
 			r.Post("/summaries/generate", api.GenerateSummaryHandler)
+			r.Get("/progress", api.GetProgressHandler)
 		})
 	})
 

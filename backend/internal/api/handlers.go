@@ -26,6 +26,7 @@ type API struct {
 	quizService      *services.QuizService
 	flashcardService *services.FlashcardService
 	summaryService   *services.SummaryService
+	progressService  *services.ProgressService
 	healthChecks     map[string]func(ctx context.Context) error
 }
 
@@ -35,6 +36,7 @@ func NewAPI(
 	quizSvc *services.QuizService,
 	fcSvc *services.FlashcardService,
 	sumSvc *services.SummaryService,
+	progressSvc *services.ProgressService,
 	healthChecks map[string]func(ctx context.Context) error,
 ) *API {
 	return &API{
@@ -43,6 +45,7 @@ func NewAPI(
 		quizService:      quizSvc,
 		flashcardService: fcSvc,
 		summaryService:   sumSvc,
+		progressService:  progressSvc,
 		healthChecks:     healthChecks,
 	}
 }
@@ -219,6 +222,7 @@ func (a *API) ChatHandler(w http.ResponseWriter, r *http.Request) {
 		DocumentID     string `json:"document_id"`
 		Message        string `json:"message"`
 		Stream         bool   `json:"stream"`
+		Style          string `json:"style"` // optional explanation style, e.g. "simple", "exam"
 	}
 	if !decodeJSON(w, r, &body) {
 		return
@@ -248,8 +252,9 @@ func (a *API) ChatHandler(w http.ResponseWriter, r *http.Request) {
 		body.ConversationID = conv.ID
 	}
 
+	opts := services.SendOptions{Style: body.Style}
 	if !body.Stream && r.Header.Get("Accept") != "text/event-stream" {
-		result, err := a.chatService.SendMessage(ctx, userID, body.ConversationID, body.Message, nil)
+		result, err := a.chatService.SendMessage(ctx, userID, body.ConversationID, body.Message, opts, nil)
 		if err != nil {
 			a.fail(w, err)
 			return
@@ -311,7 +316,7 @@ func (a *API) ChatHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	result, err := a.chatService.SendMessage(ctx, userID, body.ConversationID, body.Message, func(token string) error {
+	result, err := a.chatService.SendMessage(ctx, userID, body.ConversationID, body.Message, opts, func(token string) error {
 		return send(map[string]any{"type": "token", "content": token})
 	})
 	if err != nil {
@@ -419,12 +424,32 @@ func (a *API) GenerateSummaryHandler(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
+	// Long documents are summarized section by section, which can outlast the server-wide write timeout.
+	if err := http.NewResponseController(w).SetWriteDeadline(time.Time{}); err != nil {
+		log.Printf("summary: clearing write deadline: %v", err)
+	}
 	resp, err := a.summaryService.GenerateSummary(r.Context(), auth.UserID(r.Context()), req)
 	if err != nil {
 		a.fail(w, err)
 		return
 	}
 	respondJSON(w, http.StatusOK, resp)
+}
+
+// Progress
+
+func (a *API) GetProgressHandler(w http.ResponseWriter, r *http.Request) {
+	docID := r.URL.Query().Get("document_id")
+	if docID == "" {
+		respondError(w, http.StatusBadRequest, "document_id is required")
+		return
+	}
+	progress, err := a.progressService.Get(r.Context(), auth.UserID(r.Context()), docID)
+	if err != nil {
+		a.fail(w, err)
+		return
+	}
+	respondJSON(w, http.StatusOK, progress)
 }
 
 // Helpers

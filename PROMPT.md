@@ -487,8 +487,9 @@ Suggested tables:
 - quiz_answers
 - flashcard_sets
 - flashcards
-- study_progress
-- summaries
+- summaries (cache, one per document, summary type and topic)
+
+Study progress (scores, weak pages and topics, flashcard counts) is computed from quiz answers and flashcards when requested, so there is no separate progress table that could drift.
 
 Use pgvector for vector storage: `document_chunks.embedding vector(1536)`, in the same row as the chunk text.
 
@@ -530,11 +531,11 @@ Suggested endpoints:
 - DELETE /api/conversations/{id}
 
 ### Chat
-- POST /api/chat
+- POST /api/chat (optional `style`; a router call detects requests for a quiz, flashcards or a summary and rewrites follow-ups into standalone search queries; study items come back as messages with a `type` and IDs in `metadata_json`)
 - GET /api/conversations/{id}/messages
 
 ### Quiz
-- POST /api/quizzes/generate
+- POST /api/quizzes/generate (`question_types`: mcq, true_false, short_answer; short answers are graded by the LLM against a stored reference answer)
 - POST /api/quizzes/{id}/answer (grades on the server and returns the next question)
 - GET /api/quizzes/{id} (resume: current question, score, answered questions)
 
@@ -545,7 +546,7 @@ Suggested endpoints:
 - PATCH /api/flashcards/cards/{cardId}
 
 ### Summaries
-- POST /api/summaries/generate
+- POST /api/summaries/generate (cached; `refresh: true` regenerates)
 
 ### Progress
 - GET /api/progress?document_id=

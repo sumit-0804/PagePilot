@@ -71,10 +71,11 @@ func run() error {
 	engine := rag.NewEngine(embedder, vectors, groq)
 
 	docService := services.NewDocumentService(db, files, embedder, vectors, cfg.EmbeddingBatchSize)
-	chatService := services.NewChatService(db, docService, engine)
 	quizService := services.NewQuizService(db, docService, engine, groq)
 	flashcardService := services.NewFlashcardService(db, docService, engine, groq)
 	summaryService := services.NewSummaryService(db, docService, engine, groq)
+	progressService := services.NewProgressService(db, docService)
+	chatService := services.NewChatService(db, docService, engine, groq, quizService, flashcardService, summaryService)
 
 	if err := docService.ResumeUnfinished(ctx); err != nil {
 		return err
@@ -90,7 +91,7 @@ func run() error {
 		},
 		"storage": files.Check,
 	}
-	apiServer := api.NewAPI(docService, chatService, quizService, flashcardService, summaryService, healthChecks)
+	apiServer := api.NewAPI(docService, chatService, quizService, flashcardService, summaryService, progressService, healthChecks)
 
 	server := &http.Server{
 		Addr:              fmt.Sprintf(":%s", cfg.APIPort),

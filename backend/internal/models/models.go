@@ -119,6 +119,7 @@ type QuizAnswer struct {
 	SelectedOption *int      `json:"selected_option,omitempty"`
 	AnswerText     *string   `json:"answer_text,omitempty"`
 	IsCorrect      bool      `json:"is_correct"`
+	Feedback       *string   `json:"feedback,omitempty"` // grader feedback for short answers
 	AnsweredAt     time.Time `json:"answered_at"`
 }
 
@@ -144,16 +145,15 @@ type Flashcard struct {
 	CreatedAt    time.Time `json:"created_at"`
 }
 
-type StudyProgress struct {
-	ID                 string    `gorm:"primaryKey" json:"id"`
-	UserID             string    `json:"user_id"`
-	DocumentID         string    `json:"document_id"`
-	TotalQuizzesTaken  int       `json:"total_quizzes_taken"`
-	AverageScore       float64   `json:"average_score"`
-	FlashcardsKnown    int       `json:"flashcards_known"`
-	FlashcardsNeedWork int       `json:"flashcards_need_work"`
-	WeakTopicsJSON     string    `json:"weak_topics_json"`
-	LastStudiedAt      time.Time `json:"last_studied_at"`
+// Summary caches a generated summary per document, type and topic.
+type Summary struct {
+	ID            string    `gorm:"primaryKey" json:"id"`
+	UserID        string    `json:"user_id"`
+	DocumentID    string    `json:"document_id"`
+	Type          string    `json:"type"`
+	Topic         string    `json:"topic"`
+	Content       string    `json:"content"`
+	CitationsJSON string    `json:"citations_json,omitempty"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
 }
-
-func (StudyProgress) TableName() string { return "study_progress" }

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -166,21 +167,51 @@ func (g *GroqClient) send(ctx context.Context, payload chatCompletionRequest) (*
 	if err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, groqURL, bytes.NewReader(body))
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+g.apiKey)
 
-	resp, err := g.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("groq request failed: %w", err)
-	}
-	if resp.StatusCode != http.StatusOK {
-		defer resp.Body.Close()
+	for attempt := 0; ; attempt++ {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, groqURL, bytes.NewReader(body))
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+g.apiKey)
+
+		resp, err := g.httpClient.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("groq request failed: %w", err)
+		}
+		if resp.StatusCode == http.StatusOK {
+			return resp, nil
+		}
+
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 500))
-		return nil, fmt.Errorf("groq returned status %d: %s", resp.StatusCode, strings.TrimSpace(string(msg)))
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusTooManyRequests || attempt >= maxRateLimitRetries {
+			return nil, fmt.Errorf("groq returned status %d: %s", resp.StatusCode, strings.TrimSpace(string(msg)))
+		}
+		if err := sleepCtx(ctx, retryAfter(resp.Header.Get("Retry-After"), attempt)); err != nil {
+			return nil, err
+		}
 	}
-	return resp, nil
+}
+
+const maxRateLimitRetries = 4
+
+// retryAfter uses Groq's Retry-After seconds when given, otherwise backs off exponentially.
+func retryAfter(header string, attempt int) time.Duration {
+	if secs, err := strconv.ParseFloat(strings.TrimSpace(header), 64); err == nil && secs > 0 {
+		return time.Duration(secs * float64(time.Second))
+	}
+	return min(2*time.Second<<attempt, time.Minute)
+}
+
+func sleepCtx(ctx context.Context, d time.Duration) error {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
+	}
 }

@@ -60,21 +60,44 @@ func createUser(t *testing.T, db *gorm.DB) string {
 	return id
 }
 
+// fakeLLM answers by kind of call, told apart by the system prompt.
 type fakeLLM struct {
-	answer string
-	json   string
+	answer string // Generate and Stream
+	json   string // quiz and flashcard generation
+	route  string // chat router; defaults to a plain question
+	grade  string // short-answer grading
 	err    error
+
+	generateCalls  int
+	generatePrompt []string // user prompts sent to Generate
+	lastSystem     string   // system prompt of the last Generate or Stream call
 }
 
-func (f *fakeLLM) Generate(context.Context, []rag.ChatMessage) (string, error) {
+func (f *fakeLLM) Generate(_ context.Context, msgs []rag.ChatMessage) (string, error) {
+	f.generateCalls++
+	f.generatePrompt = append(f.generatePrompt, msgs[len(msgs)-1].Content)
+	f.lastSystem = msgs[0].Content
 	return f.answer, f.err
 }
 
-func (f *fakeLLM) GenerateJSON(context.Context, []rag.ChatMessage) (string, error) {
-	return f.json, f.err
+func (f *fakeLLM) GenerateJSON(_ context.Context, msgs []rag.ChatMessage) (string, error) {
+	if f.err != nil {
+		return "", f.err
+	}
+	switch system := msgs[0].Content; {
+	case strings.Contains(system, "intent router"):
+		if f.route == "" {
+			return `{"intent": "question"}`, nil
+		}
+		return f.route, nil
+	case strings.Contains(system, "answer grader"):
+		return f.grade, nil
+	}
+	return f.json, nil
 }
 
-func (f *fakeLLM) Stream(_ context.Context, _ []rag.ChatMessage, onChunk func(string) error) (string, error) {
+func (f *fakeLLM) Stream(_ context.Context, msgs []rag.ChatMessage, onChunk func(string) error) (string, error) {
+	f.lastSystem = msgs[0].Content
 	if f.err != nil {
 		return "", f.err
 	}
@@ -87,14 +110,16 @@ func (f *fakeLLM) Stream(_ context.Context, _ []rag.ChatMessage, onChunk func(st
 }
 
 type harness struct {
-	db     *gorm.DB
-	llm    *fakeLLM
-	engine *rag.Engine
-	docs   *DocumentService
-	chat   *ChatService
-	quiz   *QuizService
-	cards  *FlashcardService
-	files  *storage.LocalStore
+	db        *gorm.DB
+	llm       *fakeLLM
+	engine    *rag.Engine
+	docs      *DocumentService
+	chat      *ChatService
+	quiz      *QuizService
+	cards     *FlashcardService
+	summaries *SummaryService
+	progress  *ProgressService
+	files     *storage.LocalStore
 }
 
 func newHarness(t *testing.T) *harness {
@@ -105,17 +130,24 @@ func newHarness(t *testing.T) *harness {
 	llm := &fakeLLM{}
 	engine := rag.NewEngine(emb, vectors, llm)
 	docs := NewDocumentService(db, files, emb, vectors, 5)
+	quiz := NewQuizService(db, docs, engine, llm)
+	cards := NewFlashcardService(db, docs, engine, llm)
+	summaries := NewSummaryService(db, docs, engine, llm)
 	return &harness{
-		db:     db,
-		llm:    llm,
-		engine: engine,
-		docs:   docs,
-		chat:   NewChatService(db, docs, engine),
-		quiz:   NewQuizService(db, docs, engine, llm),
-		cards:  NewFlashcardService(db, docs, engine, llm),
-		files:  files,
+		db:        db,
+		llm:       llm,
+		engine:    engine,
+		docs:      docs,
+		chat:      NewChatService(db, docs, engine, llm, quiz, cards, summaries),
+		quiz:      quiz,
+		cards:     cards,
+		summaries: summaries,
+		progress:  NewProgressService(db, docs),
+		files:     files,
 	}
 }
+
+func intPtr(n int) *int { return &n }
 
 func readFixture(t *testing.T, name string) []byte {
 	t.Helper()

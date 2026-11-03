@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -15,6 +17,16 @@ import (
 )
 
 var ErrAlreadyAnswered = errors.New("question has already been answered")
+
+const (
+	typeMCQ         = "mcq"
+	typeTrueFalse   = "true_false"
+	typeShortAnswer = "short_answer"
+
+	maxAnswerChars = 2000
+)
+
+var questionTypes = []string{typeMCQ, typeTrueFalse, typeShortAnswer}
 
 type QuizService struct {
 	db        *gorm.DB
@@ -28,17 +40,20 @@ func NewQuizService(db *gorm.DB, docs *DocumentService, ragEngine *rag.Engine, l
 }
 
 type GenerateQuizRequest struct {
-	DocumentID     string `json:"document_id"`
-	ConversationID string `json:"conversation_id"`
-	Topic          string `json:"topic"`
-	Difficulty     string `json:"difficulty"` // "easy", "medium", "hard"
-	NumQuestions   int    `json:"num_questions"`
+	DocumentID     string   `json:"document_id"`
+	ConversationID string   `json:"conversation_id"`
+	Topic          string   `json:"topic"`
+	Difficulty     string   `json:"difficulty"` // "easy", "medium", "hard"
+	NumQuestions   int      `json:"num_questions"`
+	QuestionTypes  []string `json:"question_types"` // "mcq", "true_false", "short_answer"; default mcq
 }
 
 type generatedQuestion struct {
+	Type            string   `json:"type"`
 	Question        string   `json:"question"`
 	Options         []string `json:"options"`
-	CorrectOption   int      `json:"correct_option"`
+	CorrectOption   *int     `json:"correct_option"`
+	ReferenceAnswer string   `json:"reference_answer"`
 	Explanation     string   `json:"explanation"`
 	CitationPage    int      `json:"citation_page"`
 	CitationExcerpt string   `json:"citation_excerpt"`
@@ -47,13 +62,17 @@ type generatedQuestion struct {
 type QuizQuestionDTO struct {
 	ID              string   `json:"id"`
 	QuestionOrder   int      `json:"question_order"`
+	QuestionType    string   `json:"question_type"`
 	QuestionText    string   `json:"question_text"`
 	Options         []string `json:"options"`
 	IsAnswered      bool     `json:"is_answered"`
 	SelectedOption  *int     `json:"selected_option,omitempty"`
+	AnswerText      string   `json:"answer_text,omitempty"`
 	IsCorrect       bool     `json:"is_correct,omitempty"`
-	CorrectOption   *int     `json:"correct_option,omitempty"` // hidden until answered
-	Explanation     string   `json:"explanation,omitempty"`    // hidden until answered
+	CorrectOption   *int     `json:"correct_option,omitempty"`   // hidden until answered
+	ReferenceAnswer string   `json:"reference_answer,omitempty"` // hidden until answered
+	Explanation     string   `json:"explanation,omitempty"`      // hidden until answered
+	Feedback        string   `json:"feedback,omitempty"`
 	CitationPage    *int     `json:"citation_page,omitempty"`
 	CitationExcerpt string   `json:"citation_excerpt,omitempty"`
 }
@@ -83,6 +102,18 @@ func (s *QuizService) GenerateQuiz(ctx context.Context, userID string, req Gener
 	default:
 		req.Difficulty = "medium"
 	}
+	types := []string{typeMCQ}
+	if len(req.QuestionTypes) > 0 {
+		types = nil
+		for _, t := range req.QuestionTypes {
+			if !slices.Contains(questionTypes, t) {
+				return nil, fmt.Errorf("%w: question_types may only contain %s", ErrInvalidInput, strings.Join(questionTypes, ", "))
+			}
+			if !slices.Contains(types, t) {
+				types = append(types, t)
+			}
+		}
+	}
 
 	convID, err := ownedConversationID(ctx, s.db, userID, req.DocumentID, req.ConversationID)
 	if err != nil {
@@ -94,23 +125,27 @@ func (s *QuizService) GenerateQuiz(ctx context.Context, userID string, req Gener
 	}
 	pages := excerptPages(excerpts)
 
-	prompt := fmt.Sprintf(`Generate an interactive study quiz with %d multiple-choice questions based strictly on the document excerpts below.
+	prompt := fmt.Sprintf(`Generate an interactive study quiz with %d questions based strictly on the document excerpts below.
 Topic: %s
 Difficulty: %s
+Allowed question types: %s (mix them if more than one is allowed)
 
-CRITICAL GROUNDING RULES:
+RULES:
 1. Every question MUST be answerable from the excerpts.
-2. Provide exactly 4 options per question.
-3. correct_option must be an integer index from 0 to 3 (0=A, 1=B, 2=C, 3=D).
-4. citation_page must be the page number shown in the excerpt that contains the answer.
-5. Provide a helpful explanation of why the correct option is right and the others are wrong.
-6. Output MUST be a JSON object matching this schema:
+2. "mcq": exactly 4 options; correct_option is the index 0-3.
+3. "true_false": options must be ["True", "False"]; correct_option is 0 for True, 1 for False.
+4. "short_answer": options is []; correct_option is null; reference_answer is a concise model answer from the excerpts.
+5. citation_page must be the page number shown in the excerpt that contains the answer.
+6. explanation says why the answer is right (and, for mcq, why the other options are wrong).
+7. Output MUST be a JSON object matching this schema:
 {
   "questions": [
     {
+      "type": "mcq",
       "question": "Question text here?",
       "options": ["Option A", "Option B", "Option C", "Option D"],
       "correct_option": 1,
+      "reference_answer": "",
       "explanation": "Explanation here",
       "citation_page": 4,
       "citation_excerpt": "Relevant sentence from text"
@@ -119,7 +154,7 @@ CRITICAL GROUNDING RULES:
 }
 
 EXCERPTS:
-%s`, req.NumQuestions, req.Topic, req.Difficulty, formatExcerpts(excerpts))
+%s`, req.NumQuestions, req.Topic, req.Difficulty, strings.Join(types, ", "), formatExcerpts(excerpts))
 
 	llmResp, err := s.llmClient.GenerateJSON(ctx, []rag.ChatMessage{
 		{Role: "system", Content: "You are an expert exam creator. Respond ONLY with a JSON object."},
@@ -138,29 +173,12 @@ EXCERPTS:
 
 	var questions []models.QuizQuestion
 	for _, g := range generated.Questions {
-		if g.Question == "" || len(g.Options) != 4 || g.CorrectOption < 0 || g.CorrectOption > 3 {
+		q, ok := buildQuestion(g, types, pages)
+		if !ok {
 			continue // skip malformed questions rather than store something ungradeable
 		}
-		opts, err := json.Marshal(g.Options)
-		if err != nil {
-			return nil, err
-		}
-		correct := g.CorrectOption
-		var excerpt *string
-		if g.CitationExcerpt != "" {
-			excerpt = &g.CitationExcerpt
-		}
-		questions = append(questions, models.QuizQuestion{
-			ID:              uuid.NewString(),
-			QuestionOrder:   len(questions),
-			QuestionType:    "mcq",
-			QuestionText:    g.Question,
-			OptionsJSON:     string(opts),
-			CorrectOption:   &correct,
-			Explanation:     g.Explanation,
-			CitationPage:    verifiedPage(g.CitationPage, pages),
-			CitationExcerpt: excerpt,
-		})
+		q.QuestionOrder = len(questions)
+		questions = append(questions, q)
 	}
 	if len(questions) == 0 {
 		return nil, errors.New("the AI did not return any usable questions, please try again")
@@ -188,6 +206,52 @@ EXCERPTS:
 		return nil, fmt.Errorf("saving quiz: %w", err)
 	}
 	return s.GetSession(ctx, userID, session.ID)
+}
+
+// buildQuestion validates one generated question against its type's rules.
+func buildQuestion(g generatedQuestion, allowed []string, pages map[int]bool) (models.QuizQuestion, bool) {
+	if g.Type == "" {
+		g.Type = typeMCQ
+	}
+	if strings.TrimSpace(g.Question) == "" || !slices.Contains(allowed, g.Type) {
+		return models.QuizQuestion{}, false
+	}
+
+	q := models.QuizQuestion{
+		ID:           uuid.NewString(),
+		QuestionType: g.Type,
+		QuestionText: g.Question,
+		Explanation:  g.Explanation,
+		CitationPage: verifiedPage(g.CitationPage, pages),
+	}
+	switch g.Type {
+	case typeMCQ:
+		if len(g.Options) != 4 || g.CorrectOption == nil || *g.CorrectOption < 0 || *g.CorrectOption > 3 {
+			return models.QuizQuestion{}, false
+		}
+	case typeTrueFalse:
+		if g.CorrectOption == nil || (*g.CorrectOption != 0 && *g.CorrectOption != 1) {
+			return models.QuizQuestion{}, false
+		}
+		g.Options = []string{"True", "False"}
+	case typeShortAnswer:
+		if strings.TrimSpace(g.ReferenceAnswer) == "" {
+			return models.QuizQuestion{}, false
+		}
+		g.Options, g.CorrectOption = []string{}, nil
+		q.ReferenceAnswer = &g.ReferenceAnswer
+	}
+
+	opts, err := json.Marshal(g.Options)
+	if err != nil {
+		return models.QuizQuestion{}, false
+	}
+	q.OptionsJSON = string(opts)
+	q.CorrectOption = g.CorrectOption
+	if g.CitationExcerpt != "" {
+		q.CitationExcerpt = &g.CitationExcerpt
+	}
+	return q, true
 }
 
 func (s *QuizService) loadSession(ctx context.Context, db *gorm.DB, userID, sessionID string) (*models.QuizSession, error) {
@@ -246,33 +310,40 @@ func questionDTO(q models.QuizQuestion) (QuizQuestionDTO, error) {
 	dto := QuizQuestionDTO{
 		ID:            q.ID,
 		QuestionOrder: q.QuestionOrder,
+		QuestionType:  q.QuestionType,
 		QuestionText:  q.QuestionText,
 		Options:       opts,
 	}
 	if q.Answer != nil {
 		dto.IsAnswered = true
 		dto.SelectedOption = q.Answer.SelectedOption
+		dto.AnswerText = deref(q.Answer.AnswerText)
+		dto.Feedback = deref(q.Answer.Feedback)
 		dto.IsCorrect = q.Answer.IsCorrect
 		dto.CorrectOption = q.CorrectOption
+		dto.ReferenceAnswer = deref(q.ReferenceAnswer)
 		dto.Explanation = q.Explanation
 		dto.CitationPage = q.CitationPage
-		if q.CitationExcerpt != nil {
-			dto.CitationExcerpt = *q.CitationExcerpt
-		}
+		dto.CitationExcerpt = deref(q.CitationExcerpt)
 	}
 	return dto, nil
 }
 
 type AnswerSubmissionRequest struct {
 	QuestionID     string `json:"question_id"`
-	SelectedOption int    `json:"selected_option"`
+	SelectedOption *int   `json:"selected_option"` // mcq and true_false
+	AnswerText     string `json:"answer_text"`     // short_answer
 }
 
 type AnswerFeedbackResponse struct {
 	QuestionID      string           `json:"question_id"`
+	QuestionType    string           `json:"question_type"`
 	IsCorrect       bool             `json:"is_correct"`
 	CorrectOption   *int             `json:"correct_option"`
-	SelectedOption  int              `json:"selected_option"`
+	SelectedOption  *int             `json:"selected_option,omitempty"`
+	AnswerText      string           `json:"answer_text,omitempty"`
+	ReferenceAnswer string           `json:"reference_answer,omitempty"`
+	Feedback        string           `json:"feedback,omitempty"`
 	Explanation     string           `json:"explanation"`
 	CitationPage    *int             `json:"citation_page,omitempty"`
 	CitationExcerpt string           `json:"citation_excerpt,omitempty"`
@@ -283,86 +354,151 @@ type AnswerFeedbackResponse struct {
 	NextQuestion    *QuizQuestionDTO `json:"next_question,omitempty"`
 }
 
-// SubmitAnswer grades the current question on the server and advances the quiz in one transaction.
+// SubmitAnswer grades the current question on the server and advances the quiz.
+// Short answers are graded by the LLM first, outside the transaction, so no row stays locked meanwhile.
 func (s *QuizService) SubmitAnswer(ctx context.Context, userID, sessionID string, req AnswerSubmissionRequest) (*AnswerFeedbackResponse, error) {
-	var feedback *AnswerFeedbackResponse
-	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		session, err := s.loadSession(ctx, tx.Clauses(clause.Locking{Strength: "UPDATE"}), userID, sessionID)
+	session, err := s.loadSession(ctx, s.db, userID, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	question, err := currentQuestion(session, req.QuestionID)
+	if err != nil {
+		return nil, err
+	}
+
+	answer := models.QuizAnswer{
+		ID:         uuid.NewString(),
+		QuestionID: question.ID,
+		SessionID:  session.ID,
+		UserID:     userID,
+		AnsweredAt: time.Now(),
+	}
+	switch question.QuestionType {
+	case typeShortAnswer:
+		text := strings.TrimSpace(req.AnswerText)
+		if text == "" || len(text) > maxAnswerChars {
+			return nil, fmt.Errorf("%w: answer_text must be 1-%d characters", ErrInvalidInput, maxAnswerChars)
+		}
+		correct, feedback, err := s.gradeShortAnswer(ctx, question, text)
+		if err != nil {
+			return nil, err
+		}
+		answer.AnswerText, answer.IsCorrect, answer.Feedback = &text, correct, &feedback
+	default:
+		var opts []string
+		if err := json.Unmarshal([]byte(question.OptionsJSON), &opts); err != nil {
+			return nil, err
+		}
+		if req.SelectedOption == nil || *req.SelectedOption < 0 || *req.SelectedOption >= len(opts) {
+			return nil, fmt.Errorf("%w: selected_option must be between 0 and %d", ErrInvalidInput, len(opts)-1)
+		}
+		answer.SelectedOption = req.SelectedOption
+		answer.IsCorrect = question.CorrectOption != nil && *question.CorrectOption == *req.SelectedOption
+	}
+
+	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		locked, err := s.loadSession(ctx, tx.Clauses(clause.Locking{Strength: "UPDATE"}), userID, sessionID)
 		if err != nil {
 			return err
 		}
-		if session.Completed || session.CurrentIndex >= len(session.Questions) {
-			return ErrAlreadyAnswered
-		}
-		question := session.Questions[session.CurrentIndex]
-		if question.ID != req.QuestionID {
-			return fmt.Errorf("%w: only the current question can be answered", ErrInvalidInput)
-		}
-		if question.Answer != nil {
-			return ErrAlreadyAnswered
-		}
-		var opts []string
-		if err := json.Unmarshal([]byte(question.OptionsJSON), &opts); err != nil {
+		// Another request may have answered while this one was grading.
+		if _, err := currentQuestion(locked, question.ID); err != nil {
 			return err
 		}
-		if req.SelectedOption < 0 || req.SelectedOption >= len(opts) {
-			return fmt.Errorf("%w: selected_option must be between 0 and %d", ErrInvalidInput, len(opts)-1)
-		}
-
-		selected := req.SelectedOption
-		isCorrect := question.CorrectOption != nil && *question.CorrectOption == selected
-		if err := tx.Create(&models.QuizAnswer{
-			ID:             uuid.NewString(),
-			QuestionID:     question.ID,
-			SessionID:      session.ID,
-			UserID:         userID,
-			SelectedOption: &selected,
-			IsCorrect:      isCorrect,
-			AnsweredAt:     time.Now(),
-		}).Error; err != nil {
+		if err := tx.Create(&answer).Error; err != nil {
 			return fmt.Errorf("saving answer: %w", err)
 		}
-
-		if isCorrect {
-			session.Score++
+		if answer.IsCorrect {
+			locked.Score++
 		}
-		session.CurrentIndex++
-		session.Completed = session.CurrentIndex >= session.TotalQuestions
-		if err := tx.Model(&models.QuizSession{}).Where("id = ?", session.ID).Updates(map[string]any{
-			"score":         session.Score,
-			"current_index": session.CurrentIndex,
-			"completed":     session.Completed,
+		locked.CurrentIndex++
+		locked.Completed = locked.CurrentIndex >= locked.TotalQuestions
+		session = locked
+		return tx.Model(&models.QuizSession{}).Where("id = ?", locked.ID).Updates(map[string]any{
+			"score":         locked.Score,
+			"current_index": locked.CurrentIndex,
+			"completed":     locked.Completed,
 			"updated_at":    time.Now(),
-		}).Error; err != nil {
-			return fmt.Errorf("updating quiz progress: %w", err)
-		}
-
-		feedback = &AnswerFeedbackResponse{
-			QuestionID:     question.ID,
-			IsCorrect:      isCorrect,
-			CorrectOption:  question.CorrectOption,
-			SelectedOption: selected,
-			Explanation:    question.Explanation,
-			CitationPage:   question.CitationPage,
-			CurrentScore:   session.Score,
-			TotalQuestions: session.TotalQuestions,
-			CurrentIndex:   session.CurrentIndex,
-			Completed:      session.Completed,
-		}
-		if question.CitationExcerpt != nil {
-			feedback.CitationExcerpt = *question.CitationExcerpt
-		}
-		if !session.Completed {
-			next, err := questionDTO(session.Questions[session.CurrentIndex])
-			if err != nil {
-				return err
-			}
-			feedback.NextQuestion = &next
-		}
-		return nil
+		}).Error
 	})
 	if err != nil {
 		return nil, err
 	}
+
+	feedback := &AnswerFeedbackResponse{
+		QuestionID:      question.ID,
+		QuestionType:    question.QuestionType,
+		IsCorrect:       answer.IsCorrect,
+		CorrectOption:   question.CorrectOption,
+		SelectedOption:  answer.SelectedOption,
+		AnswerText:      deref(answer.AnswerText),
+		ReferenceAnswer: deref(question.ReferenceAnswer),
+		Feedback:        deref(answer.Feedback),
+		Explanation:     question.Explanation,
+		CitationPage:    question.CitationPage,
+		CitationExcerpt: deref(question.CitationExcerpt),
+		CurrentScore:    session.Score,
+		TotalQuestions:  session.TotalQuestions,
+		CurrentIndex:    session.CurrentIndex,
+		Completed:       session.Completed,
+	}
+	if !session.Completed {
+		next, err := questionDTO(session.Questions[session.CurrentIndex])
+		if err != nil {
+			return nil, err
+		}
+		feedback.NextQuestion = &next
+	}
 	return feedback, nil
+}
+
+// currentQuestion returns the session's current question if it is the one being answered.
+func currentQuestion(session *models.QuizSession, questionID string) (models.QuizQuestion, error) {
+	if session.Completed || session.CurrentIndex >= len(session.Questions) {
+		return models.QuizQuestion{}, ErrAlreadyAnswered
+	}
+	q := session.Questions[session.CurrentIndex]
+	if q.ID != questionID {
+		return models.QuizQuestion{}, fmt.Errorf("%w: only the current question can be answered", ErrInvalidInput)
+	}
+	if q.Answer != nil {
+		return models.QuizQuestion{}, ErrAlreadyAnswered
+	}
+	return q, nil
+}
+
+func (s *QuizService) gradeShortAnswer(ctx context.Context, q models.QuizQuestion, answer string) (bool, string, error) {
+	prompt := fmt.Sprintf(`Grade the student's answer against the reference answer.
+Mark it correct if it captures the key idea of the reference answer, even if worded differently; ignore spelling and grammar.
+Give one or two sentences of feedback addressed to the student.
+
+QUESTION: %s
+REFERENCE ANSWER: %s
+EXPLANATION: %s
+STUDENT ANSWER: %s
+
+Respond with a JSON object: {"is_correct": true, "feedback": "..."}`, q.QuestionText, deref(q.ReferenceAnswer), q.Explanation, answer)
+
+	resp, err := s.llmClient.GenerateJSON(ctx, []rag.ChatMessage{
+		{Role: "system", Content: "You are a fair answer grader for study quizzes. Respond ONLY with a JSON object."},
+		{Role: "user", Content: prompt},
+	})
+	if err != nil {
+		return false, "", fmt.Errorf("grading failed: %w", err)
+	}
+	var graded struct {
+		IsCorrect *bool  `json:"is_correct"`
+		Feedback  string `json:"feedback"`
+	}
+	if err := json.Unmarshal([]byte(resp), &graded); err != nil || graded.IsCorrect == nil {
+		return false, "", errors.New("the AI could not grade this answer, please try again")
+	}
+	return *graded.IsCorrect, graded.Feedback, nil
+}
+
+func deref(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
 }
