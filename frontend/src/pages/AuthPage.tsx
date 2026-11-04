@@ -6,6 +6,7 @@ import { toast } from 'sonner'
 import { supabase } from '@/lib/supabase'
 import { api } from '@/services/api'
 import { useAuth } from '@/hooks/useAuth'
+import { useCaptcha } from '@/hooks/useCaptcha'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -27,6 +28,7 @@ export default function AuthPage({ mode }: { mode: 'signin' | 'signup' }) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
+  const { captcha, getCaptchaToken } = useCaptcha()
 
   const from = (location.state as { from?: string } | null)?.from ?? '/'
   // While a guest logs in, the session briefly becomes the account before the claim finishes.
@@ -52,7 +54,8 @@ export default function AuthPage({ mode }: { mode: 'signin' | 'signup' }) {
         const { error: refreshError } = await supabase.auth.refreshSession()
         if (refreshError) throw refreshError
       } else if (signingUp) {
-        const { data, error } = await supabase.auth.signUp({ email, password })
+        const captchaToken = await getCaptchaToken()
+        const { data, error } = await supabase.auth.signUp({ email, password, options: { captchaToken } })
         if (error) throw error
         // With email confirmation on, Supabase returns no session until the link is clicked.
         if (!data.session) {
@@ -61,7 +64,8 @@ export default function AuthPage({ mode }: { mode: 'signin' | 'signup' }) {
         }
       } else {
         const guestToken = isGuest ? session?.access_token : undefined
-        const { error } = await supabase.auth.signInWithPassword({ email, password })
+        const captchaToken = await getCaptchaToken()
+        const { error } = await supabase.auth.signInWithPassword({ email, password, options: { captchaToken } })
         if (error) throw error
         if (guestToken) {
           try {
@@ -172,6 +176,7 @@ export default function AuthPage({ mode }: { mode: 'signin' | 'signup' }) {
               </li>
             ))}
           </ul>
+          {captcha}
         </form>
 
         <p className="mt-5 text-center text-sm text-muted-foreground">

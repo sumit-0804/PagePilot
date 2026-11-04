@@ -8,6 +8,7 @@ import { api, ApiError, isLoginRequired, parseFollowUps } from '@/services/api'
 import { supabase } from '@/lib/supabase'
 import { queryKeys, useDocuments } from '@/hooks/queries'
 import { useAuth } from '@/hooks/useAuth'
+import { useCaptcha } from '@/hooks/useCaptcha'
 import { useStudyStore } from '@/stores/useStudyStore'
 import { displayName } from '@/lib/format'
 import { Button } from '@/components/ui/button'
@@ -52,6 +53,7 @@ export function ChatView({
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const { session, loading: authLoading, isGuest } = useAuth()
+  const { captcha, getCaptchaToken } = useCaptcha()
   const conversation = useQuery({
     queryKey: queryKeys.conversation(conversationId ?? ''),
     queryFn: () => api.conversations.get(conversationId!),
@@ -145,7 +147,8 @@ export function ChatView({
       try {
         if (!session) {
           // Visitors chat as Supabase anonymous users so the server can count their free message.
-          const { error } = await supabase.auth.signInAnonymously()
+          const captchaToken = await getCaptchaToken()
+          const { error } = await supabase.auth.signInAnonymously({ options: { captchaToken } })
           if (error) throw new Error(`Couldn't start a guest session: ${error.message}`)
         }
         const done = await api.chat.stream(
@@ -186,7 +189,7 @@ export function ChatView({
         }
       }
     },
-    [conversationId, defaultStyle, draftReadyIds, navigate, queryClient, refreshConversation, session],
+    [conversationId, defaultStyle, draftReadyIds, getCaptchaToken, navigate, queryClient, refreshConversation, session],
   )
 
   // A message typed on a document page is sent once this new conversation opens (once, even in StrictMode).
@@ -428,6 +431,7 @@ export function ChatView({
         onOpenChange={setUploadOpen}
         onUploaded={(doc) => setWaitingIds((ids) => (ids.includes(doc.id) ? ids : [...ids, doc.id]))}
       />
+      {!session && captcha}
     </div>
   )
 }
