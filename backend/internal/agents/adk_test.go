@@ -267,7 +267,7 @@ type fakeSearcher struct{}
 func (fakeSearcher) Search(context.Context, string) (*websearch.Result, error) {
 	return &websearch.Result{
 		Answer:  "Go 1.27 is the latest release.",
-		Sources: []websearch.Source{{Title: "Go releases", URL: "https://go.dev/doc/devel/release"}},
+		Sources: []websearch.Source{{Title: "Go releases", URL: "https://go.dev/doc/devel/release", Content: "go1.27 (released 2026-08-11)"}},
 	}, nil
 }
 

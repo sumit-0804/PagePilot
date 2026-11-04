@@ -44,11 +44,10 @@ type Config struct {
 	OCRPagesPerCall int
 	OCRMaxPages     int // scanned pages read per document, to protect the daily quota
 
-	// WebSearchProvider is "gemini" (Gemini with Google Search grounding) or "none".
-	WebSearchProvider string
-	WebSearchModel    string
-	WebSearchRPM      int
-	WebSearchRPD      int
+	// WebSearchProvider is "tavily" or "none".
+	WebSearchProvider   string
+	TavilyAPIKey        string
+	WebSearchMaxResults int
 }
 
 // Load reads .env (cwd or repo root) and validates required settings.
@@ -103,10 +102,9 @@ func Load() (*Config, error) {
 		OCRRPD:             intVar("OCR_RPD", 0),
 		OCRPagesPerCall:    intVar("OCR_PAGES_PER_CALL", 10),
 		OCRMaxPages:        intVar("OCR_MAX_PAGES", 100),
-		WebSearchProvider:  strings.ToLower(getEnv("WEB_SEARCH_PROVIDER", "none")),
-		WebSearchModel:     getEnv("WEB_SEARCH_MODEL", ""),
-		WebSearchRPM:       intVar("WEB_SEARCH_RPM", 0),
-		WebSearchRPD:       intVar("WEB_SEARCH_RPD", 0),
+		WebSearchProvider:   strings.ToLower(getEnv("WEB_SEARCH_PROVIDER", "none")),
+		TavilyAPIKey:        getEnv("TAVILY_API_KEY", ""),
+		WebSearchMaxResults: intVar("WEB_SEARCH_MAX_RESULTS", 5),
 	}
 
 	required := map[string]string{
@@ -138,14 +136,11 @@ func Load() (*Config, error) {
 		errs = append(errs, fmt.Errorf("OCR_PROVIDER must be gemini or none, got %q", cfg.OCRProvider))
 	}
 	switch cfg.WebSearchProvider {
-	case "gemini":
-		required["GEMINI_API_KEY"] = cfg.GeminiAPIKey
-		required["WEB_SEARCH_MODEL"] = cfg.WebSearchModel
-		required["WEB_SEARCH_RPM"] = positive(cfg.WebSearchRPM)
-		required["WEB_SEARCH_RPD"] = positive(cfg.WebSearchRPD)
+	case "tavily":
+		required["TAVILY_API_KEY"] = cfg.TavilyAPIKey
 	case "none":
 	default:
-		errs = append(errs, fmt.Errorf("WEB_SEARCH_PROVIDER must be gemini or none, got %q", cfg.WebSearchProvider))
+		errs = append(errs, fmt.Errorf("WEB_SEARCH_PROVIDER must be tavily or none, got %q", cfg.WebSearchProvider))
 	}
 	for key, val := range required {
 		if val == "" {

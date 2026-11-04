@@ -9,6 +9,8 @@ import type {
   ExplanationStyle,
   FlashcardSet,
   CardStatus,
+  FollowUp,
+  FollowUpKind,
   Message,
   Progress,
   QuestionType,
@@ -192,5 +194,22 @@ export function parseMetadata(message: Message): Record<string, string> {
     return JSON.parse(message.metadata_json) as Record<string, string>
   } catch {
     return {}
+  }
+}
+
+const FOLLOW_UP_KINDS: FollowUpKind[] = ['simpler', 'example', 'deeper', 'quiz', 'flashcards', 'question']
+
+/** Follow-ups the server suggested for this answer; [] when there are none (older messages, failures). */
+export function parseFollowUps(message: Message): FollowUp[] {
+  if (!message.metadata_json) return []
+  try {
+    const raw = (JSON.parse(message.metadata_json) as { follow_ups?: unknown }).follow_ups
+    if (!Array.isArray(raw)) return []
+    return raw.filter(
+      (f): f is FollowUp =>
+        typeof f?.text === 'string' && f.text.trim() !== '' && FOLLOW_UP_KINDS.includes(f.kind),
+    )
+  } catch {
+    return []
   }
 }

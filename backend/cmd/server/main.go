@@ -83,12 +83,9 @@ func run() error {
 	summaryService := services.NewSummaryService(db, docService, engine, groq)
 	progressService := services.NewProgressService(db, docService)
 
-	searcher, err := websearch.New(ctx, cfg)
-	if err != nil {
-		return err
-	}
+	searcher := websearch.New(cfg)
 	if searcher != nil {
-		log.Printf("Web search: %s (limits %d RPM / %d RPD)", cfg.WebSearchModel, cfg.WebSearchRPM, cfg.WebSearchRPD)
+		log.Printf("Web search: Tavily (up to %d results per search)", cfg.WebSearchMaxResults)
 	} else {
 		log.Println("Web search: off")
 	}
@@ -105,7 +102,7 @@ func run() error {
 		return err
 	}
 	log.Printf("Chat agent: ADK (model %s)", cfg.GroqModel)
-	chatService := services.NewChatService(db, docService, responder)
+	chatService := services.NewChatService(db, docService, responder, groq)
 
 	if err := docService.ResumeUnfinished(ctx); err != nil {
 		return err

@@ -13,7 +13,7 @@ import {
 } from 'lucide-react'
 import { CardSpotlight } from '@/components/ui/aceternity/spotlight'
 import { cn } from '@/lib/utils'
-import type { ExplanationStyle } from '@/types'
+import type { ExplanationStyle, FollowUp, FollowUpKind } from '@/types'
 
 const GENERAL_STARTERS = [
   {
@@ -165,28 +165,40 @@ export function SuggestedPrompts({
   )
 }
 
-const FOLLOW_UPS: {
-  label: string
-  message: string
-  style?: ExplanationStyle
-  icon: typeof Sparkles
-  iconClass: string
-}[] = [
-  { label: 'Explain more simply', message: 'Explain that more simply.', style: 'simple', icon: WandSparkles, iconClass: 'text-emerald-500 dark:text-emerald-400' },
-  { label: 'Give another example', message: 'Give me another example of that.', style: 'example', icon: Compass, iconClass: 'text-amber-500 dark:text-amber-400' },
-  { label: 'Go deeper', message: 'Go deeper into that.', style: 'detailed', icon: Microscope, iconClass: 'text-purple-500 dark:text-purple-400' },
-  { label: 'Test my understanding', message: 'Test my understanding of this topic.', icon: BrainCircuit, iconClass: 'text-rose-500 dark:text-rose-400' },
-  { label: 'Create flashcards', message: 'Create flashcards on this topic.', icon: Layers, iconClass: 'text-cyan-500 dark:text-cyan-400' },
+// Each kind keeps its icon, and the explanation style it switches to, whatever the suggested wording.
+const FOLLOW_UP_LOOK: Record<FollowUpKind, { style?: ExplanationStyle; icon: typeof Sparkles; iconClass: string }> = {
+  simpler: { style: 'simple', icon: WandSparkles, iconClass: 'text-emerald-500 dark:text-emerald-400' },
+  example: { style: 'example', icon: Compass, iconClass: 'text-amber-500 dark:text-amber-400' },
+  deeper: { style: 'detailed', icon: Microscope, iconClass: 'text-purple-500 dark:text-purple-400' },
+  quiz: { icon: BrainCircuit, iconClass: 'text-rose-500 dark:text-rose-400' },
+  flashcards: { icon: Layers, iconClass: 'text-cyan-500 dark:text-cyan-400' },
+  question: { icon: Lightbulb, iconClass: 'text-sky-500 dark:text-sky-400' },
+}
+
+// Shown when the server didn't suggest any (older messages, or the suggestion call failed).
+const GENERIC_FOLLOW_UPS: { label: string; message: string; kind: FollowUpKind }[] = [
+  { label: 'Explain more simply', message: 'Explain that more simply.', kind: 'simpler' },
+  { label: 'Give another example', message: 'Give me another example of that.', kind: 'example' },
+  { label: 'Go deeper', message: 'Go deeper into that.', kind: 'deeper' },
+  { label: 'Test my understanding', message: 'Test my understanding of this topic.', kind: 'quiz' },
+  { label: 'Create flashcards', message: 'Create flashcards on this topic.', kind: 'flashcards' },
 ]
 
 /** Next steps offered under the latest answer; they continue the same conversation. */
 export function FollowUps({
+  suggestions,
   onPick,
   disabled,
 }: {
+  suggestions: FollowUp[]
   onPick: (text: string, style?: ExplanationStyle) => void
   disabled?: boolean
 }) {
+  const items =
+    suggestions.length > 0
+      ? suggestions.map((s) => ({ label: s.text, message: s.text, kind: s.kind }))
+      : GENERIC_FOLLOW_UPS
+
   return (
     <motion.div
       initial={{ opacity: 0, y: 6 }}
@@ -194,8 +206,9 @@ export function FollowUps({
       className="flex flex-wrap gap-2 pt-1"
       aria-label="Follow-up actions"
     >
-      {FOLLOW_UPS.map((f) => {
-        const Icon = f.icon
+      {items.map((f) => {
+        const look = FOLLOW_UP_LOOK[f.kind]
+        const Icon = look.icon
         return (
           <motion.button
             key={f.label}
@@ -203,10 +216,10 @@ export function FollowUps({
             whileHover={{ y: -1, scale: 1.02 }}
             whileTap={{ scale: 0.98 }}
             disabled={disabled}
-            onClick={() => onPick(f.message, f.style)}
+            onClick={() => onPick(f.message, look.style)}
             className="inline-flex items-center gap-1.5 rounded-full border border-border/80 bg-card/90 px-3.5 py-1.5 text-xs font-medium text-muted-foreground shadow-2xs transition-colors hover:border-primary/60 hover:bg-accent/50 hover:text-foreground disabled:opacity-50"
           >
-            <Icon className={cn('size-3.5', f.iconClass)} />
+            <Icon className={cn('size-3.5', look.iconClass)} />
             {f.label}
           </motion.button>
         )

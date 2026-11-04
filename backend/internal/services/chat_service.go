@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"time"
 	"unicode/utf8"
 
@@ -28,10 +29,11 @@ type ChatService struct {
 	db        *gorm.DB
 	docs      *DocumentService
 	responder Responder
+	llm       rag.LLMClient // suggests follow-ups under answers
 }
 
-func NewChatService(db *gorm.DB, docs *DocumentService, responder Responder) *ChatService {
-	return &ChatService{db: db, docs: docs, responder: responder}
+func NewChatService(db *gorm.DB, docs *DocumentService, responder Responder, llm rag.LLMClient) *ChatService {
+	return &ChatService{db: db, docs: docs, responder: responder, llm: llm}
 }
 
 // CreateConversation starts a chat, optionally attached to some of the user's READY documents.
@@ -253,6 +255,15 @@ func (s *ChatService) SendMessage(ctx context.Context, userID, convID, content s
 	}
 	if reply.Citations == nil {
 		reply.Citations = []models.Citation{}
+	}
+	if reply.Type == "chat" && !opts.Guest && reply.Metadata == "" {
+		// Follow-ups are a nice-to-have: on failure the UI falls back to its generic chips.
+		if followUps, err := suggestFollowUps(ctx, s.llm, content, reply.Content); err != nil {
+			log.Printf("suggesting follow-ups: %v", err)
+		} else if len(followUps) > 0 {
+			meta, _ := json.Marshal(map[string]any{"follow_ups": followUps}) // plain structs always marshal
+			reply.Metadata = string(meta)
+		}
 	}
 
 	citationsJSON, err := json.Marshal(reply.Citations)

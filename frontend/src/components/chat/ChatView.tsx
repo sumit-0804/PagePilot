@@ -4,7 +4,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { AnimatePresence, motion } from 'motion/react'
 import { toast } from 'sonner'
 import { ArrowDown, BookOpen, Loader2, Sparkles } from 'lucide-react'
-import { api, ApiError, isLoginRequired } from '@/services/api'
+import { api, ApiError, isLoginRequired, parseFollowUps } from '@/services/api'
 import { supabase } from '@/lib/supabase'
 import { queryKeys, useDocuments } from '@/hooks/queries'
 import { useAuth } from '@/hooks/useAuth'
@@ -377,7 +377,7 @@ export function ChatView({
             </motion.div>
           )}
 
-          {showFollowUps && !mustLogIn && <FollowUps onPick={pickPrompt} />}
+          {showFollowUps && !mustLogIn && <FollowUps suggestions={parseFollowUps(last)} onPick={pickPrompt} />}
         </div>
       </div>
 

@@ -61,10 +61,8 @@ services:
       - key: OCR_MAX_PAGES
         value: "100"
       - key: WEB_SEARCH_PROVIDER
-        value: gemini
-      - key: WEB_SEARCH_MODEL
-        value: gemini-3.5-flash-lite
-      - key: WEB_SEARCH_RPM
+        value: tavily
+      - key: TAVILY_API_KEY
         sync: false
-      - key: WEB_SEARCH_RPD
-        sync: false
+      - key: WEB_SEARCH_MAX_RESULTS
+        value: "5"

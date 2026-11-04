@@ -2,7 +2,9 @@ package services
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"slices"
 	"testing"
 
 	"github.com/pagepilot/backend/internal/models"
@@ -25,7 +27,8 @@ func (s *stubResponder) Respond(_ context.Context, req ReplyRequest, streamWrite
 			return nil, err
 		}
 	}
-	return s.reply, nil
+	reply := *s.reply // a fresh reply per message, as the agent returns
+	return &reply, nil
 }
 
 func TestChatWithAndWithoutDocuments(t *testing.T) {
@@ -76,6 +79,65 @@ func TestChatWithAndWithoutDocuments(t *testing.T) {
 	other := createUser(t, h.db)
 	if _, err := h.chat.SendMessage(ctx, other, conv.ID, "hi", SendOptions{}, nil); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("another user's conversation: expected ErrNotFound, got %v", err)
+	}
+}
+
+func TestAnswersGetTopicFollowUps(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	user, guest := createUser(t, h.db), createUser(t, h.db)
+
+	h.llm.json = `{"follow_ups": [
+		{"text": "Why does water boil lower on Everest?", "kind": "question"},
+		{"text": "Quiz me on boiling points.", "kind": "quiz"},
+		{"text": "Explain vapor pressure simply", "kind": "made-up"},
+		{"text": "", "kind": "deeper"},
+		{"text": "This suggestion is far too long to fit on a small chip under the answer", "kind": "deeper"},
+		{"text": "Give another boiling example", "kind": "example"},
+		{"text": "One too many", "kind": "question"}
+	]}`
+	h.responder.reply = &Reply{Content: "Water boils at 100 °C at sea level.", Type: "chat"}
+	conv, err := h.chat.CreateConversation(ctx, user, nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := h.chat.SendMessage(ctx, user, conv.ID, "Boiling point of water?", SendOptions{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var meta struct {
+		FollowUps []FollowUp `json:"follow_ups"`
+	}
+	if err := json.Unmarshal([]byte(result.AssistantMessage.MetadataJSON), &meta); err != nil {
+		t.Fatalf("metadata %q: %v", result.AssistantMessage.MetadataJSON, err)
+	}
+	want := []FollowUp{
+		{Text: "Why does water boil lower on Everest?", Kind: "question"},
+		{Text: "Quiz me on boiling points", Kind: "quiz"},
+		{Text: "Explain vapor pressure simply", Kind: "question"},
+		{Text: "Give another boiling example", Kind: "example"},
+	}
+	if !slices.Equal(meta.FollowUps, want) {
+		t.Fatalf("follow-ups = %+v", meta.FollowUps)
+	}
+	if !contains(h.llm.lastJSONPrompt, "Boiling point of water?") || !contains(h.llm.lastJSONPrompt, "100 °C") {
+		t.Fatal("the follow-up prompt should include the question and the answer")
+	}
+
+	h.llm.json = "not json"
+	result, err = h.chat.SendMessage(ctx, user, conv.ID, "And on Everest?", SendOptions{}, nil)
+	if err != nil || result.AssistantMessage.MetadataJSON != "" {
+		t.Fatalf("a follow-up failure must not fail the answer: %q (err %v)", result.AssistantMessage.MetadataJSON, err)
+	}
+
+	h.llm.json = `{"follow_ups": [{"text": "Anything", "kind": "question"}]}`
+	guestConv, err := h.chat.CreateConversation(ctx, guest, nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err = h.chat.SendMessage(ctx, guest, guestConv.ID, "Hi", SendOptions{Guest: true}, nil)
+	if err != nil || result.AssistantMessage.MetadataJSON != "" {
+		t.Fatalf("guests can't send a follow-up, so none should be made: %q (err %v)", result.AssistantMessage.MetadataJSON, err)
 	}
 }
 

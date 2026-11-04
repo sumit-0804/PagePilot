@@ -137,7 +137,7 @@ func newHarness(t *testing.T) *harness {
 		llm:       llm,
 		engine:    engine,
 		docs:      docs,
-		chat:      NewChatService(db, docs, responder),
+		chat:      NewChatService(db, docs, responder, llm),
 		responder: responder,
 		quiz:      quiz,
 		cards:     cards,

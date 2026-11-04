@@ -204,7 +204,9 @@ const SourceRules = `SOURCE RULES:
 2. Never invent markers or cite a number no tool returned in this turn.
 3. Never say a document or web page says something its passage does not state.
 4. When you answer from your own knowledge, don't add markers. If the attached documents or the web don't cover the question, say so before adding what you know.
-5. Use a clear, friendly teaching tone, Markdown headings and bullet points where they help, and KaTeX ($...$ or $$...$$) for math.`
+5. Answers built from document passages or web results are 2-3 sentences of plain text with their markers: no headings, tables or "why this matters" extras. Write longer only when the user asks for detail or an explanation (e.g. "explain", "in detail", "step by step") or an explanation style is requested.
+6. Never add your own "Sources" or "References" section; the app lists the cited sources under the answer.
+7. Use a clear, friendly tone, and KaTeX ($...$ or $$...$$) for math.`
 
 // Matches [3], [3, 5] and [3; 5]; Unicode spaces are allowed as in citationRe.
 var numberedCitationRe = regexp.MustCompile(`\[[\s\p{Zs}]*(\d+(?:[\s\p{Zs}]*[,;][\s\p{Zs}]*\d+)*)[\s\p{Zs}]*\]`)

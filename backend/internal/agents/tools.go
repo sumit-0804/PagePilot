@@ -57,6 +57,7 @@ type webSource struct {
 	Cite  string `json:"cite"`
 	Title string `json:"title"`
 	URL   string `json:"url"`
+	Text  string `json:"text"`
 }
 
 type webResult struct {
@@ -278,8 +279,8 @@ func newTools(svc Services) ([]tool.Tool, error) {
 			log.Printf("[agent] web_search %q: %d sources", args.Query, len(res.Sources))
 			out := webResult{Answer: res.Answer, Sources: make([]webSource, len(res.Sources))}
 			for i, s := range res.Sources {
-				n := t.addSource(models.Citation{Kind: models.CitationWeb, URL: s.URL, Title: s.Title, Snippet: rag.Snippet(res.Answer, 160)})
-				out.Sources[i] = webSource{Cite: fmt.Sprintf("[%d]", n), Title: s.Title, URL: s.URL}
+				n := t.addSource(models.Citation{Kind: models.CitationWeb, URL: s.URL, Title: s.Title, Snippet: rag.Snippet(s.Content, 160)})
+				out.Sources[i] = webSource{Cite: fmt.Sprintf("[%d]", n), Title: s.Title, URL: s.URL, Text: s.Content}
 			}
 			if len(res.Sources) == 0 {
 				out.Note = "The search returned no sources; don't cite it."

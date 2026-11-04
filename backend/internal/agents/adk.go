@@ -76,6 +76,7 @@ func NewEngine(llm model.LLM, svc Services) (*Engine, error) {
 		GenerateContentConfig: &genai.GenerateContentConfig{Temperature: genai.Ptr[float32](0.2)},
 		Tools:                 tools,
 		BeforeToolCallbacks:   []llmagent.BeforeToolCallback{reportStatus},
+		OnToolErrorCallbacks:  []llmagent.OnToolErrorCallback{logToolError},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("creating tutor agent: %w", err)
@@ -125,6 +126,12 @@ func (t *turn) addSource(c models.Citation) int {
 	c.N = len(t.sources) + 1
 	t.sources = append(t.sources, c)
 	return c.N
+}
+
+// logToolError records tool failures; the model still gets the error and decides how to recover.
+func logToolError(_ agent.Context, tl tool.Tool, _ map[string]any, err error) (map[string]any, error) {
+	log.Printf("[agent] %s failed: %v", tl.Name(), err)
+	return nil, nil
 }
 
 // reportStatus tells the user what the agent is doing before each tool runs.

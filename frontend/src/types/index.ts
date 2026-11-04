@@ -90,6 +90,14 @@ export type ExplanationStyle =
   | 'example'
   | 'exam'
 
+export type FollowUpKind = 'simpler' | 'example' | 'deeper' | 'quiz' | 'flashcards' | 'question'
+
+/** A next message suggested under an answer, specific to its topic. */
+export interface FollowUp {
+  text: string
+  kind: FollowUpKind
+}
+
 export interface ChatDoneEvent {
   type: 'done'
   conversation_id: string
