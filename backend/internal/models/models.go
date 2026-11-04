@@ -33,8 +33,22 @@ type Document struct {
 	ChunksTotal    int       `json:"chunks_total"`
 	ChunksEmbedded int       `json:"chunks_embedded"`
 	OCRPages       int       `gorm:"column:ocr_pages" json:"ocr_pages"` // pages whose text was read by OCR
+	Format         string    `json:"format"`                            // pdf, docx, pptx, txt, md, csv or html
+	MimeType       string    `json:"mime_type"`
 	CreatedAt      time.Time `json:"created_at"`
 	UpdatedAt      time.Time `json:"updated_at"`
+}
+
+// SectionLabel names what a chunk's page_number counts in this document's format.
+func (d Document) SectionLabel() string {
+	switch d.Format {
+	case "", "pdf":
+		return "Page"
+	case "pptx":
+		return "Slide"
+	default:
+		return "Section"
+	}
 }
 
 type DocumentChunk struct {
@@ -50,21 +64,40 @@ type DocumentChunk struct {
 }
 
 type Conversation struct {
-	ID         string    `gorm:"primaryKey" json:"id"`
-	UserID     string    `json:"user_id"`
-	DocumentID string    `json:"document_id"`
-	Title      string    `json:"title"`
-	CreatedAt  time.Time `json:"created_at"`
-	UpdatedAt  time.Time `json:"updated_at"`
+	ID        string    `gorm:"primaryKey" json:"id"`
+	UserID    string    `json:"user_id"`
+	Title     string    `json:"title"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 
-	Messages []Message `gorm:"foreignKey:ConversationID" json:"messages,omitempty"`
+	Messages  []Message  `gorm:"foreignKey:ConversationID" json:"messages,omitempty"`
+	Documents []Document `gorm:"-" json:"documents"` // attached documents, loaded by ChatService
 }
 
-// Citation links an answer claim to a specific page
+// ConversationDocument attaches one of the user's documents to a conversation.
+type ConversationDocument struct {
+	ConversationID string    `gorm:"primaryKey"`
+	DocumentID     string    `gorm:"primaryKey"`
+	UserID         string
+	CreatedAt      time.Time
+}
+
+const (
+	CitationDocument = "document"
+	CitationWeb      = "web"
+)
+
+// Citation links an answer claim to a document page/slide/section or a web page.
+// N is the answer's "[n]" marker; legacy and summary citations use "[Page X]" and leave it 0.
 type Citation struct {
-	DocumentID   string `json:"document_id"`
-	DocumentName string `json:"document_name"`
-	PageNumber   int    `json:"page_number"`
+	N            int    `json:"n,omitempty"`
+	Kind         string `json:"kind,omitempty"`
+	DocumentID   string `json:"document_id,omitempty"`
+	DocumentName string `json:"document_name,omitempty"`
+	PageNumber   int    `json:"page_number,omitempty"`
+	Label        string `json:"label,omitempty"` // "Page", "Slide" or "Section"
+	URL          string `json:"url,omitempty"`
+	Title        string `json:"title,omitempty"`
 	Snippet      string `json:"snippet"`
 }
 
@@ -82,7 +115,7 @@ type Message struct {
 type QuizSession struct {
 	ID             string    `gorm:"primaryKey" json:"id"`
 	UserID         string    `json:"user_id"`
-	DocumentID     string    `json:"document_id"`
+	DocumentID     *string   `json:"document_id,omitempty"` // nil for a general-knowledge quiz
 	ConversationID *string   `json:"conversation_id,omitempty"`
 	Topic          string    `json:"topic"`
 	Difficulty     string    `json:"difficulty"`
@@ -127,7 +160,7 @@ type QuizAnswer struct {
 type FlashcardSet struct {
 	ID             string    `gorm:"primaryKey" json:"id"`
 	UserID         string    `json:"user_id"`
-	DocumentID     string    `json:"document_id"`
+	DocumentID     *string   `json:"document_id,omitempty"` // nil for general-knowledge cards
 	ConversationID *string   `json:"conversation_id,omitempty"`
 	Title          string    `json:"title"`
 	Topic          string    `json:"topic"`

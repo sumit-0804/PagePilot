@@ -33,10 +33,8 @@ type GenerateFlashcardsRequest struct {
 
 var validCardStatuses = map[string]bool{"new": true, "known": true, "practice": true}
 
+// GenerateFlashcards builds cards from a document, or from general knowledge on a topic when DocumentID is empty.
 func (s *FlashcardService) GenerateFlashcards(ctx context.Context, userID string, req GenerateFlashcardsRequest) (*models.FlashcardSet, error) {
-	if _, err := s.docs.GetReady(ctx, userID, req.DocumentID); err != nil {
-		return nil, err
-	}
 	if req.Count <= 0 || req.Count > 30 {
 		req.Count = 6
 	}
@@ -44,18 +42,18 @@ func (s *FlashcardService) GenerateFlashcards(ctx context.Context, userID string
 	if err != nil {
 		return nil, err
 	}
-	excerpts, err := loadExcerpts(ctx, s.db, s.ragEngine, userID, req.DocumentID, req.Topic, 15)
+	excerpts, err := studySource(ctx, s.db, s.docs, s.ragEngine, userID, req.DocumentID, req.Topic, 15)
 	if err != nil {
 		return nil, err
 	}
 	pages := excerptPages(excerpts)
 
-	prompt := fmt.Sprintf(`Create %d high-yield active-recall study flashcards grounded in these document excerpts.
+	prompt := fmt.Sprintf(`Create %d high-yield active-recall study flashcards grounded in the source below.
 Topic: %s
 
 RULES:
 1. Front must be a clear conceptual question, term, or prompt.
-2. Back must be a concise, precise explanation or definition taken from the excerpts.
+2. Back must be a concise, precise explanation or definition taken from the source.
 3. citation_page must be the page number shown in the excerpt the card comes from.
 4. Output MUST be a JSON object:
 {
@@ -68,8 +66,7 @@ RULES:
   ]
 }
 
-EXCERPTS:
-%s`, req.Count, req.Topic, formatExcerpts(excerpts))
+%s`, req.Count, req.Topic, sourceBlock(excerpts))
 
 	llmResp, err := s.llmClient.GenerateJSON(ctx, []rag.ChatMessage{
 		{Role: "system", Content: "You are an expert study flashcard writer. Respond ONLY with a JSON object."},
@@ -92,12 +89,12 @@ EXCERPTS:
 
 	title := req.Topic
 	if strings.TrimSpace(title) == "" {
-		title = "Document Revision Cards"
+		title = "Revision Cards"
 	}
 	set := &models.FlashcardSet{
 		ID:             uuid.NewString(),
 		UserID:         userID,
-		DocumentID:     req.DocumentID,
+		DocumentID:     optionalID(req.DocumentID),
 		ConversationID: convID,
 		Title:          title,
 		Topic:          req.Topic,

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import * as pdfjs from 'pdfjs-dist'
 import workerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
-import { ChevronLeft, ChevronRight, Loader2, Minus, Plus, X } from 'lucide-react'
+import { ChevronLeft, ChevronRight, FileText, Loader2, Minus, Plus, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 
@@ -16,7 +16,19 @@ interface Target {
 
 const ZOOMS = [0.6, 0.8, 1, 1.25, 1.5, 2]
 
-export function PdfViewer({ url, urlError, title, target, onClose }: { url?: string; urlError?: string; title: string; target: Target; onClose: () => void }) {
+export function PdfViewer({
+  url,
+  urlError,
+  title,
+  target,
+  onClose,
+}: {
+  url?: string
+  urlError?: string
+  title: string
+  target: Target
+  onClose: () => void
+}) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const viewportRef = useRef<HTMLDivElement>(null)
   const [doc, setDoc] = useState<pdfjs.PDFDocumentProxy | null>(null)
@@ -79,7 +91,8 @@ export function PdfViewer({ url, urlError, title, target, onClose }: { url?: str
       run.task.promise.then(
         () => !run.cancelled && setRendering(false),
         (err: Error) => {
-          if (err.name !== 'RenderingCancelledException' && !run.cancelled) setLoadError(`Couldn't draw page ${shownPage}: ${err.message}`)
+          if (err.name !== 'RenderingCancelledException' && !run.cancelled)
+            setLoadError(`Couldn't draw page ${shownPage}: ${err.message}`)
         },
       )
     })
@@ -99,25 +112,51 @@ export function PdfViewer({ url, urlError, title, target, onClose }: { url?: str
   const isCitedPage = target.fromCitation && shownPage === target.page
 
   return (
-    <section className="flex h-full flex-col bg-muted" aria-label={`PDF viewer: ${title}`}>
-      <header className="flex items-center gap-2 border-b bg-card px-3 py-2">
+    <section className="flex h-full flex-col bg-muted/60" aria-label={`PDF viewer: ${title}`}>
+      <header className="glass-panel flex h-13 items-center gap-2 border-b border-border/80 px-3">
+        <FileText className="size-4 shrink-0 text-primary" />
         <h2 className="min-w-0 flex-1 truncate text-sm font-semibold" title={title}>
           {title}
         </h2>
-        <Button variant="ghost" size="icon-sm" aria-label="Zoom out" disabled={zoomIndex === 0} onClick={() => setZoomIndex((z) => z - 1)}>
-          <Minus />
-        </Button>
-        <span className="w-11 text-center text-xs tabular-nums text-muted-foreground">{Math.round(ZOOMS[zoomIndex] * 100)}%</span>
-        <Button variant="ghost" size="icon-sm" aria-label="Zoom in" disabled={zoomIndex === ZOOMS.length - 1} onClick={() => setZoomIndex((z) => z + 1)}>
-          <Plus />
-        </Button>
+        <div className="flex items-center gap-0.5 rounded-lg border border-border/70 bg-background/70 p-0.5">
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            aria-label="Zoom out"
+            disabled={zoomIndex === 0}
+            onClick={() => setZoomIndex((z) => z - 1)}
+          >
+            <Minus />
+          </Button>
+          <span className="w-11 text-center text-xs font-medium tabular-nums text-muted-foreground">
+            {Math.round(ZOOMS[zoomIndex] * 100)}%
+          </span>
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            aria-label="Zoom in"
+            disabled={zoomIndex === ZOOMS.length - 1}
+            onClick={() => setZoomIndex((z) => z + 1)}
+          >
+            <Plus />
+          </Button>
+        </div>
         <Button variant="ghost" size="icon-sm" aria-label="Close PDF" onClick={onClose}>
           <X />
         </Button>
       </header>
 
-      <nav className="flex items-center justify-center gap-2 border-b bg-card px-3 py-1.5 text-sm" aria-label="Page navigation">
-        <Button variant="ghost" size="icon-sm" aria-label="Previous page" disabled={shownPage <= 1} onClick={() => goTo(shownPage - 1)}>
+      <nav
+        className="flex items-center justify-center gap-2 border-b border-border/70 bg-card/85 px-3 py-1.5 text-sm backdrop-blur-xs"
+        aria-label="Page navigation"
+      >
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          aria-label="Previous page"
+          disabled={shownPage <= 1}
+          onClick={() => goTo(shownPage - 1)}
+        >
           <ChevronLeft />
         </Button>
         <form
@@ -128,7 +167,7 @@ export function PdfViewer({ url, urlError, title, target, onClose }: { url?: str
           }}
           className="flex items-center gap-1.5"
         >
-          <label htmlFor="pdf-page" className="text-muted-foreground">
+          <label htmlFor="pdf-page" className="text-xs font-medium text-muted-foreground">
             Page
           </label>
           <input
@@ -138,31 +177,46 @@ export function PdfViewer({ url, urlError, title, target, onClose }: { url?: str
             onChange={(e) => setPageInput(e.target.value)}
             onBlur={() => setPageInput(String(shownPage))}
             className={cn(
-              'w-11 rounded-md border px-1 py-0.5 text-center tabular-nums',
+              'w-12 rounded-lg border px-1.5 py-0.5 text-center text-xs font-semibold tabular-nums transition-all',
               // The highlighter brings its own background; a bg-* utility here would override it.
-              isCitedPage ? 'highlighter border-transparent font-semibold' : 'bg-background',
+              isCitedPage ? 'highlighter border-transparent font-bold' : 'bg-background',
             )}
           />
-          <span className="text-muted-foreground">of {pageCount || '…'}</span>
+          <span className="text-xs text-muted-foreground">of {pageCount || '…'}</span>
         </form>
-        <Button variant="ghost" size="icon-sm" aria-label="Next page" disabled={!pageCount || shownPage >= pageCount} onClick={() => goTo(shownPage + 1)}>
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          aria-label="Next page"
+          disabled={!pageCount || shownPage >= pageCount}
+          onClick={() => goTo(shownPage + 1)}
+        >
           <ChevronRight />
         </Button>
       </nav>
 
       <div ref={viewportRef} className="relative min-h-0 flex-1 overflow-auto p-4">
         {error ? (
-          <p role="alert" className="mx-auto max-w-sm rounded-lg border border-destructive/30 bg-card p-4 text-sm text-destructive">
+          <p
+            role="alert"
+            className="mx-auto max-w-sm rounded-xl border border-destructive/30 bg-card p-4 text-sm text-destructive shadow-sm"
+          >
             {error}
           </p>
         ) : (
           <>
             {(!doc || rendering) && (
               <div className="absolute inset-0 grid place-items-center" role="status">
-                <Loader2 className="size-5 animate-spin text-muted-foreground" aria-label="Loading page" />
+                <Loader2 className="size-5 animate-spin text-primary" aria-label="Loading page" />
               </div>
             )}
-            <canvas ref={canvasRef} className={cn('mx-auto block bg-white shadow-sm', isCitedPage && 'ring-4 ring-highlight')} />
+            <canvas
+              ref={canvasRef}
+              className={cn(
+                'mx-auto block rounded-lg bg-white shadow-md transition-shadow',
+                isCitedPage && 'ring-4 ring-highlight shadow-lg',
+              )}
+            />
           </>
         )}
       </div>

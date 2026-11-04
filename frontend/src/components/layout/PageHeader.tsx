@@ -11,7 +11,7 @@ export function PageHeader({ title, actions }: { title?: ReactNode; actions?: Re
   const setSidebarOpen = useStudyStore((s) => s.setSidebarOpen)
   const setMobileNavOpen = useStudyStore((s) => s.setMobileNavOpen)
   return (
-    <header className="flex h-12 shrink-0 items-center gap-2 border-b px-3">
+    <header className="glass-panel sticky top-0 z-20 flex h-13 shrink-0 items-center gap-2.5 border-b border-border/70 px-4">
       {!tablet ? (
         <Button variant="ghost" size="icon-sm" aria-label="Open menu" onClick={() => setMobileNavOpen(true)}>
           <Menu />
@@ -23,8 +23,8 @@ export function PageHeader({ title, actions }: { title?: ReactNode; actions?: Re
           </Button>
         )
       )}
-      <div className="min-w-0 flex-1 truncate text-sm font-semibold">{title}</div>
-      {actions}
+      <div className="min-w-0 flex-1 truncate text-sm font-semibold tracking-tight text-foreground/90">{title}</div>
+      {actions && <div className="flex items-center gap-2">{actions}</div>}
     </header>
   )
 }

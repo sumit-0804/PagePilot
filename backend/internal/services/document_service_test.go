@@ -105,7 +105,7 @@ func TestUploadRejectsInvalidFiles(t *testing.T) {
 		want error
 	}{
 		{"empty", nil, ErrEmptyFile},
-		{"not a pdf", []byte("plain text pretending to be a pdf"), ErrNotPDF},
+		{"not a pdf", []byte("plain text pretending to be a pdf"), ErrUnsupportedFile},
 		{"too large", append([]byte("%PDF-"), bytes.Repeat([]byte("x"), MaxUploadBytes)...), ErrTooLarge},
 	}
 	for _, tc := range cases {
@@ -117,14 +117,49 @@ func TestUploadRejectsInvalidFiles(t *testing.T) {
 	}
 }
 
+func TestTextDocumentsAreIndexedBySection(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	user := createUser(t, h.db)
+
+	if _, err := h.docs.Upload(ctx, user, "notes.zip", []byte("PK\x03\x04 not an office file")); !errors.Is(err, ErrUnsupportedFile) {
+		t.Fatalf("zip without an office extension: expected ErrUnsupportedFile, got %v", err)
+	}
+
+	md := "# Cells\n\nRobert Hooke first described cells in 1665 while observing cork.\n\n# Energy\n\nMitochondria produce ATP, the energy currency of the cell."
+	doc, err := h.docs.Upload(ctx, user, "biology.md", []byte(md))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doc.Format != "md" || doc.MimeType != "text/markdown" {
+		t.Fatalf("format: %s %s", doc.Format, doc.MimeType)
+	}
+	ready := h.waitReady(t, user, doc.ID)
+	if ready.Status != models.StatusReady || ready.PageCount != 2 {
+		t.Fatalf("markdown should be READY with 2 sections: %s %d %s", ready.Status, ready.PageCount, ready.ErrorMessage)
+	}
+
+	sec, err := h.docs.Section(ctx, user, doc.ID, 2)
+	if err != nil || !strings.Contains(sec.Text, "Mitochondria") || sec.Label != "Section" {
+		t.Fatalf("section 2: %+v (err %v)", sec, err)
+	}
+	if _, err := h.docs.Section(ctx, user, doc.ID, 9); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("missing section: expected ErrNotFound, got %v", err)
+	}
+	results, err := h.engine.Retrieve(ctx, "Mitochondria produce ATP", user, doc.ID, 1)
+	if err != nil || len(results) != 1 || results[0].PageNumber != 2 {
+		t.Fatalf("search should find section 2: %+v (err %v)", results, err)
+	}
+}
+
 func TestFailureMessagesHideInternals(t *testing.T) {
 	cases := []struct {
 		err  error
 		want string
 	}{
-		{fmt.Errorf("batch 3: %w", embeddings.ErrDailyQuota), "Upload this PDF again after the limit resets"},
+		{fmt.Errorf("batch 3: %w", embeddings.ErrDailyQuota), "Upload this file again after the limit resets"},
 		{failWith("This PDF couldn't be read.", errors.New("xref offset 912 out of range")), "This PDF couldn't be read."},
-		{errors.New("pq: connection reset by peer"), "Something went wrong while processing this PDF"},
+		{errors.New("pq: connection reset by peer"), "Something went wrong while processing this file"},
 	}
 	for _, tc := range cases {
 		got := failureMessage(tc.err)
@@ -228,7 +263,7 @@ func TestDocumentsAreIsolatedBetweenUsers(t *testing.T) {
 	if err := h.docs.Delete(ctx, bob, aliceDoc.ID); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("Delete: expected ErrNotFound, got %v", err)
 	}
-	if _, err := h.chat.CreateConversation(ctx, bob, aliceDoc.ID, ""); !errors.Is(err, ErrNotFound) {
+	if _, err := h.chat.CreateConversation(ctx, bob, []string{aliceDoc.ID}, ""); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("CreateConversation: expected ErrNotFound, got %v", err)
 	}
 	docs, err := h.docs.List(ctx, bob)
@@ -250,7 +285,7 @@ func TestConversationRequiresReadyDocument(t *testing.T) {
 	h := newHarness(t)
 	user := createUser(t, h.db)
 	failed := h.upload(t, user, readFixture(t, "no_text.pdf"))
-	if _, err := h.chat.CreateConversation(context.Background(), user, failed.ID, ""); !errors.Is(err, ErrNotReady) {
+	if _, err := h.chat.CreateConversation(context.Background(), user, []string{failed.ID}, ""); !errors.Is(err, ErrNotReady) {
 		t.Fatalf("expected ErrNotReady, got %v", err)
 	}
 }

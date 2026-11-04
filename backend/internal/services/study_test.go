@@ -2,184 +2,11 @@ package services
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"slices"
 	"strings"
 	"testing"
-
-	"github.com/pagepilot/backend/internal/models"
-	"github.com/pagepilot/backend/internal/rag"
 )
-
-func TestChatCitesOnlyRetrievedPages(t *testing.T) {
-	h := newHarness(t)
-	ctx := context.Background()
-	user := createUser(t, h.db)
-	doc := h.uploadReady(t, user)
-	conv, err := h.chat.CreateConversation(ctx, user, doc.ID, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	question := "Robert Hooke first described cells in 1665 observing cork"
-	retrieved, err := h.engine.Retrieve(ctx, question, user, doc.ID, 5)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var retrievedPages []int
-	for _, r := range retrieved {
-		retrievedPages = append(retrievedPages, r.PageNumber)
-	}
-	if !slices.Contains(retrievedPages, 2) {
-		t.Fatalf("expected page 2 to be retrieved, got %v", retrievedPages)
-	}
-
-	h.llm.answer = "Robert Hooke described cells in 1665 【Page 2】. Unrelated claim [Page 99]."
-	result, err := h.chat.SendMessage(ctx, user, conv.ID, question, SendOptions{}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(result.Citations) != 1 || result.Citations[0].PageNumber != 2 {
-		t.Fatalf("expected only page 2 cited, got %+v", result.Citations)
-	}
-	if result.AssistantMessage.Content != "Robert Hooke described cells in 1665 [Page 2]. Unrelated claim [Page 99]." {
-		t.Fatalf("saved answer should have normalized brackets, got %q", result.AssistantMessage.Content)
-	}
-
-	h.llm.answer = "The document does not say."
-	var streamed []string
-	result, err = h.chat.SendMessage(ctx, user, conv.ID, "What is the capital of Australia?", SendOptions{}, func(tok string) error {
-		streamed = append(streamed, tok)
-		return nil
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(result.Citations) != 0 || len(streamed) < 2 {
-		t.Fatalf("uncited streamed answer: citations=%d tokens=%d", len(result.Citations), len(streamed))
-	}
-
-	got, err := h.chat.GetConversation(ctx, user, conv.ID)
-	if err != nil || len(got.Messages) != 4 {
-		t.Fatalf("expected 4 stored messages, got %d (err %v)", len(got.Messages), err)
-	}
-
-	h.llm.err = errors.New("groq returned status 503")
-	if _, err := h.chat.SendMessage(ctx, user, conv.ID, "Another question", SendOptions{}, nil); err == nil {
-		t.Fatal("an LLM failure must surface as an error")
-	}
-	h.llm.err = nil
-
-	other := createUser(t, h.db)
-	if _, err := h.chat.SendMessage(ctx, other, conv.ID, "hi", SendOptions{}, nil); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("another user's conversation: expected ErrNotFound, got %v", err)
-	}
-}
-
-func TestChatFollowUpUsesRewrittenQueryAndStyle(t *testing.T) {
-	h := newHarness(t)
-	ctx := context.Background()
-	user := createUser(t, h.db)
-	doc := h.uploadReady(t, user)
-	conv, err := h.chat.CreateConversation(ctx, user, doc.ID, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// The follow-up alone says nothing about cells; only the rewritten query can retrieve page 2.
-	h.llm.route = `{"intent": "question", "search_query": "Robert Hooke first described cells in 1665 observing cork", "style": "simple"}`
-	h.llm.answer = "Hooke looked at cork and saw tiny boxes he called cells [Page 2]."
-	result, err := h.chat.SendMessage(ctx, user, conv.ID, "Explain that more simply", SendOptions{}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(result.Citations) != 1 || result.Citations[0].PageNumber != 2 {
-		t.Fatalf("rewritten query should have retrieved page 2, got %+v", result.Citations)
-	}
-	if !strings.Contains(h.llm.lastSystem, rag.ExplanationStyles["simple"]) {
-		t.Fatal("detected style should reach the prompt")
-	}
-
-	if _, err := h.chat.SendMessage(ctx, user, conv.ID, "Explain again", SendOptions{Style: "exam"}, nil); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(h.llm.lastSystem, rag.ExplanationStyles["exam"]) {
-		t.Fatal("a requested style should override the detected one")
-	}
-	if _, err := h.chat.SendMessage(ctx, user, conv.ID, "x", SendOptions{Style: "poetic"}, nil); !errors.Is(err, ErrInvalidInput) {
-		t.Fatalf("unknown style: expected ErrInvalidInput, got %v", err)
-	}
-
-	h.llm.route = "this is not json"
-	h.llm.answer = "Still answered."
-	result, err = h.chat.SendMessage(ctx, user, conv.ID, "What is a cell?", SendOptions{}, nil)
-	if err != nil || result.AssistantMessage.Type != "chat" {
-		t.Fatalf("a router failure should fall back to answering the question: %v", err)
-	}
-}
-
-func TestChatCreatesStudyItems(t *testing.T) {
-	h := newHarness(t)
-	ctx := context.Background()
-	user := createUser(t, h.db)
-	doc := h.uploadReady(t, user)
-	conv, err := h.chat.CreateConversation(ctx, user, doc.ID, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	metadata := func(m *models.Message) map[string]string {
-		var out map[string]string
-		if err := json.Unmarshal([]byte(m.MetadataJSON), &out); err != nil {
-			t.Fatalf("message metadata: %v", err)
-		}
-		return out
-	}
-
-	h.llm.route = `{"intent": "quiz", "topic": "cells", "num_questions": 2}`
-	h.llm.json = quizJSON
-	var streamed []string
-	result, err := h.chat.SendMessage(ctx, user, conv.ID, "Test my understanding", SendOptions{}, func(tok string) error {
-		streamed = append(streamed, tok)
-		return nil
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	msg := result.AssistantMessage
-	if msg.Type != "quiz" || len(streamed) != 1 || !strings.Contains(msg.Content, "cells") {
-		t.Fatalf("expected a streamed quiz message about cells, got type=%s tokens=%d %q", msg.Type, len(streamed), msg.Content)
-	}
-	quiz, err := h.quiz.GetSession(ctx, user, metadata(msg)["quiz_session_id"])
-	if err != nil || quiz.TotalQuestions != 2 {
-		t.Fatalf("quiz from chat: %+v (err %v)", quiz, err)
-	}
-	var linked models.QuizSession
-	h.db.First(&linked, "id = ?", quiz.SessionID)
-	if linked.ConversationID == nil || *linked.ConversationID != conv.ID {
-		t.Fatal("quiz should be linked to the conversation")
-	}
-
-	h.llm.route = `{"intent": "flashcards", "count": 2}`
-	h.llm.json = `{"cards": [{"front": "Powerhouse of the cell?", "back": "Mitochondria", "citation_page": 4}]}`
-	result, err = h.chat.SendMessage(ctx, user, conv.ID, "Make flashcards", SendOptions{}, nil)
-	if err != nil || result.AssistantMessage.Type != "flashcards" {
-		t.Fatalf("flashcards from chat: %v", err)
-	}
-	if _, err := h.cards.GetFlashcardSet(ctx, user, metadata(result.AssistantMessage)["flashcard_set_id"]); err != nil {
-		t.Fatalf("flashcard set from chat: %v", err)
-	}
-
-	h.llm.route = `{"intent": "summary", "summary_type": "revision"}`
-	h.llm.answer = "## Revision notes\n- Cells were first described by Hooke [Page 2]."
-	result, err = h.chat.SendMessage(ctx, user, conv.ID, "Give me revision notes", SendOptions{}, nil)
-	if err != nil || result.AssistantMessage.Type != "summary" {
-		t.Fatalf("summary from chat: %v", err)
-	}
-	if len(result.Citations) != 1 || result.Citations[0].PageNumber != 2 || metadata(result.AssistantMessage)["summary_type"] != "revision" {
-		t.Fatalf("summary citations/metadata: %+v %s", result.Citations, result.AssistantMessage.MetadataJSON)
-	}
-}
 
 const quizJSON = `{"questions": [
   {"question": "Who described cells?", "options": ["Hooke", "Darwin", "Mendel", "Crick"], "correct_option": 0,
@@ -321,7 +148,7 @@ func TestQuizRejectsForeignConversation(t *testing.T) {
 	ctx := context.Background()
 	alice, bob := createUser(t, h.db), createUser(t, h.db)
 	aliceDoc, bobDoc := h.uploadReady(t, alice), h.uploadReady(t, bob)
-	bobConv, err := h.chat.CreateConversation(ctx, bob, bobDoc.ID, "")
+	bobConv, err := h.chat.CreateConversation(ctx, bob, []string{bobDoc.ID}, "")
 	if err != nil {
 		t.Fatal(err)
 	}

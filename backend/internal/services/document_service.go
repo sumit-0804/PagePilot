@@ -1,7 +1,6 @@
 package services
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -15,6 +14,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/pagepilot/backend/internal/embeddings"
+	"github.com/pagepilot/backend/internal/extract"
 	"github.com/pagepilot/backend/internal/models"
 	"github.com/pagepilot/backend/internal/ocr"
 	"github.com/pagepilot/backend/internal/pdf"
@@ -30,12 +30,21 @@ var (
 	ErrNotFound     = errors.New("not found")
 	ErrInvalidInput = errors.New("invalid input")
 	// Shown to users as-is, so they read as sentences.
-	ErrNotPDF     = errors.New("This file isn't a PDF. Choose a .pdf file.")
-	ErrEmptyFile  = errors.New("This file is empty.")
-	ErrTooLarge   = fmt.Errorf("This PDF is larger than %d MB.", MaxUploadBytes>>20)
-	ErrNotReady   = errors.New("document is not ready yet")
-	pdfMagicBytes = []byte("%PDF-")
+	ErrUnsupportedFile = errors.New("This file type isn't supported. Upload a PDF, Word (.docx), PowerPoint (.pptx), text, Markdown, CSV or HTML file.")
+	ErrEmptyFile       = errors.New("This file is empty.")
+	ErrTooLarge        = fmt.Errorf("This file is larger than %d MB.", MaxUploadBytes>>20)
+	ErrNotReady        = errors.New("document is not ready yet")
 )
+
+var mimeTypes = map[extract.Format]string{
+	extract.PDF:  "application/pdf",
+	extract.DOCX: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+	extract.PPTX: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+	extract.TXT:  "text/plain",
+	extract.MD:   "text/markdown",
+	extract.CSV:  "text/csv",
+	extract.HTML: "text/html",
+}
 
 // A page with less text than this is treated as scanned and read with OCR (when OCR is on).
 const minPageTextChars = 40
@@ -62,7 +71,7 @@ func (s *DocumentService) UseOCR(r ocr.Recognizer, maxPages int) {
 	s.ocr, s.ocrMaxPages = r, maxPages
 }
 
-// Upload validates and stores a PDF, then processes it in the background.
+// Upload validates and stores a document, then processes it in the background.
 // An identical file the user already has READY is returned instead of being processed again.
 func (s *DocumentService) Upload(ctx context.Context, userID, filename string, data []byte) (*models.Document, error) {
 	if len(data) == 0 {
@@ -71,15 +80,16 @@ func (s *DocumentService) Upload(ctx context.Context, userID, filename string, d
 	if len(data) > MaxUploadBytes {
 		return nil, ErrTooLarge
 	}
-	if !bytes.HasPrefix(data, pdfMagicBytes) {
-		return nil, ErrNotPDF
+	format, err := extract.DetectFormat(data[:min(len(data), 4096)], filename)
+	if err != nil {
+		return nil, ErrUnsupportedFile
 	}
 
 	sum := sha256.Sum256(data)
 	hash := hex.EncodeToString(sum[:])
 
 	var existing models.Document
-	err := s.db.WithContext(ctx).
+	err = s.db.WithContext(ctx).
 		Where("user_id = ? AND content_hash = ? AND status = ?", userID, hash, models.StatusReady).
 		Order("created_at DESC").First(&existing).Error
 	if err == nil {
@@ -94,14 +104,16 @@ func (s *DocumentService) Upload(ctx context.Context, userID, filename string, d
 		ID:          docID,
 		UserID:      userID,
 		Filename:    cleanFilename(filename),
-		StoragePath: fmt.Sprintf("%s/%s.pdf", userID, docID),
+		StoragePath: fmt.Sprintf("%s/%s.%s", userID, docID, format),
 		FileSize:    int64(len(data)),
 		ContentHash: hash,
 		Status:      models.StatusUploaded,
+		Format:      string(format),
+		MimeType:    mimeTypes[format],
 	}
 
-	if err := s.files.Save(ctx, doc.StoragePath, data, "application/pdf"); err != nil {
-		return nil, fmt.Errorf("storing PDF: %w", err)
+	if err := s.files.Save(ctx, doc.StoragePath, data, doc.MimeType); err != nil {
+		return nil, fmt.Errorf("storing file: %w", err)
 	}
 	if err := s.db.WithContext(ctx).Create(doc).Error; err != nil {
 		if delErr := s.files.Delete(ctx, doc.StoragePath); delErr != nil {
@@ -162,7 +174,7 @@ func failWith(message string, cause error) error {
 
 func failureMessage(err error) string {
 	if errors.Is(err, embeddings.ErrDailyQuota) {
-		return "The daily limit for indexing documents has been reached. Upload this PDF again after the limit resets at midnight Pacific time."
+		return "The daily limit for indexing documents has been reached. Upload this file again after the limit resets at midnight Pacific time."
 	}
 	if errors.Is(err, ocr.ErrDailyQuota) {
 		return "The daily limit for reading scanned pages has been reached. Upload this PDF again after the limit resets at midnight Pacific time."
@@ -171,7 +183,11 @@ func failureMessage(err error) string {
 	if errors.As(err, &pe) {
 		return pe.message
 	}
-	return "Something went wrong while processing this PDF. Try uploading it again."
+	return "Something went wrong while processing this file. Try uploading it again."
+}
+
+func isPDF(doc *models.Document) bool {
+	return doc.Format == "" || doc.Format == string(extract.PDF)
 }
 
 func (s *DocumentService) runPipeline(ctx context.Context, doc *models.Document) error {
@@ -180,28 +196,24 @@ func (s *DocumentService) runPipeline(ctx context.Context, doc *models.Document)
 	}
 	data, err := s.files.Read(ctx, doc.StoragePath)
 	if err != nil {
-		return fmt.Errorf("reading stored PDF: %w", err)
+		return fmt.Errorf("reading stored file: %w", err)
 	}
-	started := time.Now()
-	extraction, err := extractPDF(data)
+	var pages []pdf.ExtractedPage
+	if isPDF(doc) {
+		pages, err = s.readPDF(ctx, doc, data)
+	} else {
+		pages, err = s.readOther(ctx, doc, data)
+	}
 	if err != nil {
-		return failWith("This PDF couldn't be read. It may be damaged or password-protected.", err)
-	}
-	log.Printf("[Doc %s] extracted %d pages in %s", doc.ID, extraction.TotalPages, time.Since(started).Round(time.Millisecond))
-	if err := s.update(ctx, doc.ID, map[string]any{"page_count": extraction.TotalPages}); err != nil {
-		return err
-	}
-	ocrPages, err := s.readScannedPages(ctx, doc.ID, data, extraction.Pages)
-	if err != nil {
-		return err
-	}
-	if err := s.update(ctx, doc.ID, map[string]any{"ocr_pages": ocrPages, "status": models.StatusChunking}); err != nil {
 		return err
 	}
 
-	chunks := pdf.ChunkDocument(doc.ID, doc.UserID, doc.Filename, extraction.Pages, pdf.DefaultChunkerConfig())
+	chunks := pdf.ChunkDocument(doc.ID, doc.UserID, doc.Filename, pages, pdf.DefaultChunkerConfig())
 	if len(chunks) == 0 {
-		if s.ocr != nil {
+		switch {
+		case !isPDF(doc):
+			return failWith("No text was found in this file.", errors.New("no extractable text"))
+		case s.ocr != nil:
 			return failWith("No readable text was found in this PDF, even after reading its scanned pages.", errors.New("no text after OCR"))
 		}
 		return failWith("No text was found in this PDF. If it's a scanned document, run it through OCR to add a text layer, then upload it again.",
@@ -224,7 +236,7 @@ func (s *DocumentService) runPipeline(ctx context.Context, doc *models.Document)
 		batchStarted := time.Now()
 		vecs, err := s.embedder.EmbedDocuments(ctx, texts)
 		if err != nil {
-			return failWith("Indexing this PDF failed. Try uploading it again in a few minutes.", err)
+			return failWith("Indexing this file failed. Try uploading it again in a few minutes.", err)
 		}
 		log.Printf("[Doc %s] embedded passages %d-%d of %d in %s", doc.ID, start+1, end, len(chunks), time.Since(batchStarted).Round(time.Millisecond))
 		for i, v := range vecs {
@@ -244,8 +256,94 @@ func (s *DocumentService) runPipeline(ctx context.Context, doc *models.Document)
 	if err := s.update(ctx, doc.ID, map[string]any{"status": models.StatusReady}); err != nil {
 		return err
 	}
-	log.Printf("[Doc %s] READY (%d pages, %d chunks)", doc.ID, extraction.TotalPages, len(chunks))
+	log.Printf("[Doc %s] READY (%d sections, %d chunks)", doc.ID, len(pages), len(chunks))
 	return nil
+}
+
+// readPDF extracts a PDF's pages and reads scanned ones with OCR.
+func (s *DocumentService) readPDF(ctx context.Context, doc *models.Document, data []byte) ([]pdf.ExtractedPage, error) {
+	started := time.Now()
+	extraction, err := extractPDF(data)
+	if err != nil {
+		return nil, failWith("This PDF couldn't be read. It may be damaged or password-protected.", err)
+	}
+	log.Printf("[Doc %s] extracted %d pages in %s", doc.ID, extraction.TotalPages, time.Since(started).Round(time.Millisecond))
+	if err := s.update(ctx, doc.ID, map[string]any{"page_count": extraction.TotalPages}); err != nil {
+		return nil, err
+	}
+	ocrPages, err := s.readScannedPages(ctx, doc.ID, data, extraction.Pages)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.update(ctx, doc.ID, map[string]any{"ocr_pages": ocrPages, "status": models.StatusChunking}); err != nil {
+		return nil, err
+	}
+	return extraction.Pages, nil
+}
+
+// readOther splits a Word, PowerPoint or text document into sections, stored like PDF pages.
+func (s *DocumentService) readOther(ctx context.Context, doc *models.Document, data []byte) ([]pdf.ExtractedPage, error) {
+	sections, err := extractSections(extract.Format(doc.Format), data)
+	if err != nil {
+		if errors.Is(err, extract.ErrNoText) {
+			return nil, failWith("No text was found in this file.", err)
+		}
+		return nil, failWith("This file couldn't be read. It may be damaged or in an unexpected format.", err)
+	}
+	pages := make([]pdf.ExtractedPage, len(sections))
+	for i, sec := range sections {
+		pages[i] = pdf.ExtractedPage{PageNumber: sec.Number, Text: sec.Text}
+	}
+	log.Printf("[Doc %s] extracted %d %s sections", doc.ID, len(sections), doc.Format)
+	if err := s.update(ctx, doc.ID, map[string]any{"page_count": len(sections), "status": models.StatusChunking}); err != nil {
+		return nil, err
+	}
+	return pages, nil
+}
+
+// Section returns the text of one section of a non-PDF document, for the in-app viewer.
+func (s *DocumentService) Section(ctx context.Context, userID, docID string, number int) (*extract.Section, error) {
+	doc, err := s.GetReady(ctx, userID, docID)
+	if err != nil {
+		return nil, err
+	}
+	if isPDF(doc) {
+		return nil, fmt.Errorf("%w: PDFs are shown in the PDF viewer", ErrInvalidInput)
+	}
+	data, err := s.files.Read(ctx, doc.StoragePath)
+	if err != nil {
+		return nil, fmt.Errorf("reading stored file: %w", err)
+	}
+	sections, err := extractSections(extract.Format(doc.Format), data)
+	if err != nil {
+		return nil, fmt.Errorf("extracting sections: %w", err)
+	}
+	for i := range sections {
+		if sections[i].Number == number {
+			return &sections[i], nil
+		}
+	}
+	return nil, ErrNotFound
+}
+
+func extractSections(format extract.Format, data []byte) ([]extract.Section, error) {
+	if format != extract.DOCX && format != extract.PPTX {
+		return extract.ExtractText(data, format)
+	}
+	// The zip reader needs random access, so Office files go through a temp file.
+	tmp, err := os.CreateTemp("", "pagepilot-*."+string(format))
+	if err != nil {
+		return nil, err
+	}
+	defer os.Remove(tmp.Name())
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return nil, err
+	}
+	if err := tmp.Close(); err != nil {
+		return nil, err
+	}
+	return extract.ExtractOffice(tmp.Name(), format)
 }
 
 // readScannedPages fills in the text of pages that have (almost) no text layer and returns how many it read.

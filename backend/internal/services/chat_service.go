@@ -14,6 +14,15 @@ import (
 	"gorm.io/gorm"
 )
 
+// ErrLoginRequired is returned when a guest uses up the free trial or calls an account-only feature.
+var ErrLoginRequired = errors.New("login_required")
+
+// GuestMessageLimit is how many messages a visitor can send before they must sign in.
+const GuestMessageLimit = 1
+
+// MaxAttachedDocuments bounds how many documents one conversation can search.
+const MaxAttachedDocuments = 10
+
 // ChatService stores conversations and messages; a Responder produces each reply.
 type ChatService struct {
 	db        *gorm.DB
@@ -25,24 +34,83 @@ func NewChatService(db *gorm.DB, docs *DocumentService, responder Responder) *Ch
 	return &ChatService{db: db, docs: docs, responder: responder}
 }
 
-// CreateConversation starts a chat about one of the user's READY documents.
-func (s *ChatService) CreateConversation(ctx context.Context, userID, docID, title string) (*models.Conversation, error) {
+// CreateConversation starts a chat, optionally attached to some of the user's READY documents.
+func (s *ChatService) CreateConversation(ctx context.Context, userID string, docIDs []string, title string) (*models.Conversation, error) {
+	docIDs = uniqueIDs(docIDs)
+	if len(docIDs) > MaxAttachedDocuments {
+		return nil, fmt.Errorf("%w: at most %d documents per chat", ErrInvalidInput, MaxAttachedDocuments)
+	}
+	docs := make([]models.Document, 0, len(docIDs))
+	for _, id := range docIDs {
+		doc, err := s.docs.GetReady(ctx, userID, id)
+		if err != nil {
+			return nil, err
+		}
+		docs = append(docs, *doc)
+	}
+	if title == "" {
+		title = "New chat"
+	}
+	conv := &models.Conversation{ID: uuid.NewString(), UserID: userID, Title: title}
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(conv).Error; err != nil {
+			return err
+		}
+		for _, d := range docs {
+			link := models.ConversationDocument{ConversationID: conv.ID, DocumentID: d.ID, UserID: userID}
+			if err := tx.Create(&link).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("creating conversation: %w", err)
+	}
+	conv.Documents = docs
+	return conv, nil
+}
+
+// AttachDocument adds one of the user's READY documents to a conversation they own.
+func (s *ChatService) AttachDocument(ctx context.Context, userID, convID, docID string) (*models.Conversation, error) {
+	conv, err := s.GetConversation(ctx, userID, convID)
+	if err != nil {
+		return nil, err
+	}
 	if _, err := s.docs.GetReady(ctx, userID, docID); err != nil {
 		return nil, err
 	}
-	if title == "" {
-		title = "New Study Session"
+	for _, d := range conv.Documents {
+		if d.ID == docID {
+			return conv, nil
+		}
 	}
-	conv := &models.Conversation{
-		ID:         uuid.NewString(),
-		UserID:     userID,
-		DocumentID: docID,
-		Title:      title,
+	if len(conv.Documents) >= MaxAttachedDocuments {
+		return nil, fmt.Errorf("%w: at most %d documents per chat", ErrInvalidInput, MaxAttachedDocuments)
 	}
-	if err := s.db.WithContext(ctx).Create(conv).Error; err != nil {
-		return nil, fmt.Errorf("creating conversation: %w", err)
+	link := models.ConversationDocument{ConversationID: convID, DocumentID: docID, UserID: userID}
+	if err := s.db.WithContext(ctx).Create(&link).Error; err != nil {
+		return nil, fmt.Errorf("attaching document: %w", err)
 	}
-	return conv, nil
+	return s.GetConversation(ctx, userID, convID)
+}
+
+// DetachDocument removes a document from a conversation; the document itself is kept.
+func (s *ChatService) DetachDocument(ctx context.Context, userID, convID, docID string) (*models.Conversation, error) {
+	if _, err := uuid.Parse(docID); err != nil {
+		return nil, ErrNotFound
+	}
+	if _, err := s.GetConversation(ctx, userID, convID); err != nil {
+		return nil, err
+	}
+	res := s.db.WithContext(ctx).Delete(&models.ConversationDocument{}, "conversation_id = ? AND document_id = ? AND user_id = ?", convID, docID, userID)
+	if res.Error != nil {
+		return nil, fmt.Errorf("detaching document: %w", res.Error)
+	}
+	if res.RowsAffected == 0 {
+		return nil, ErrNotFound
+	}
+	return s.GetConversation(ctx, userID, convID)
 }
 
 func (s *ChatService) ListConversations(ctx context.Context, userID string) ([]models.Conversation, error) {
@@ -51,7 +119,8 @@ func (s *ChatService) ListConversations(ctx context.Context, userID string) ([]m
 	return convs, err
 }
 
-// GetConversation returns the conversation with its messages, or ErrNotFound if the user doesn't own it.
+// GetConversation returns the conversation with its messages and attached documents,
+// or ErrNotFound if the user doesn't own it.
 func (s *ChatService) GetConversation(ctx context.Context, userID, convID string) (*models.Conversation, error) {
 	if _, err := uuid.Parse(convID); err != nil {
 		return nil, ErrNotFound
@@ -65,6 +134,14 @@ func (s *ChatService) GetConversation(ctx context.Context, userID, convID string
 	}
 	if err != nil {
 		return nil, err
+	}
+	conv.Documents = []models.Document{}
+	err = s.db.WithContext(ctx).
+		Joins("join conversation_documents cd on cd.document_id = documents.id").
+		Where("cd.conversation_id = ? AND documents.user_id = ?", convID, userID).
+		Order("cd.created_at").Find(&conv.Documents).Error
+	if err != nil {
+		return nil, fmt.Errorf("loading attached documents: %w", err)
 	}
 	return &conv, nil
 }
@@ -83,6 +160,36 @@ func (s *ChatService) DeleteConversation(ctx context.Context, userID, convID str
 	return nil
 }
 
+// ClaimGuestData moves everything a guest made to the account they signed in to.
+func (s *ChatService) ClaimGuestData(ctx context.Context, guestID, userID string) error {
+	if guestID == userID {
+		return nil
+	}
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		for _, table := range []string{"conversations", "quiz_sessions", "quiz_answers", "flashcard_sets"} {
+			if err := tx.Table(table).Where("user_id = ?", guestID).Update("user_id", userID).Error; err != nil {
+				return fmt.Errorf("claiming %s: %w", table, err)
+			}
+		}
+		return nil
+	})
+}
+
+// CheckGuestAllowance returns ErrLoginRequired once a guest has used their free messages.
+func (s *ChatService) CheckGuestAllowance(ctx context.Context, userID string) error {
+	var sent int64
+	err := s.db.WithContext(ctx).Model(&models.Message{}).
+		Joins("join conversations c on c.id = messages.conversation_id").
+		Where("c.user_id = ? AND messages.role = 'user'", userID).Count(&sent).Error
+	if err != nil {
+		return fmt.Errorf("counting guest messages: %w", err)
+	}
+	if sent >= GuestMessageLimit {
+		return ErrLoginRequired
+	}
+	return nil
+}
+
 type SendMessageResult struct {
 	UserMessage      *models.Message   `json:"user_message"`
 	AssistantMessage *models.Message   `json:"assistant_message"`
@@ -91,11 +198,13 @@ type SendMessageResult struct {
 
 // SendOptions are optional settings for one chat message.
 type SendOptions struct {
-	Style string // explanation style; overrides one detected from the message
+	Style    string                    // explanation style; overrides one detected from the message
+	Guest    bool                      // the caller is an anonymous visitor on the free trial
+	OnStatus func(status string) error // progress updates such as "Searching the web"
 }
 
-// SendMessage handles one chat message: a question is answered from the document (streaming tokens to
-// streamWriter when given), and a request for a quiz, flashcards or a summary creates one in the chat.
+// SendMessage handles one chat message: the responder answers it (streaming tokens to streamWriter
+// when given), searching attached documents or the web, or creates a quiz, flashcards or a summary.
 func (s *ChatService) SendMessage(ctx context.Context, userID, convID, content string, opts SendOptions, streamWriter func(token string) error) (*SendMessageResult, error) {
 	if opts.Style != "" {
 		if _, ok := rag.ExplanationStyles[opts.Style]; !ok {
@@ -105,6 +214,11 @@ func (s *ChatService) SendMessage(ctx context.Context, userID, convID, content s
 	conv, err := s.GetConversation(ctx, userID, convID)
 	if err != nil {
 		return nil, err
+	}
+	if opts.Guest {
+		if err := s.CheckGuestAllowance(ctx, userID); err != nil {
+			return nil, err
+		}
 	}
 
 	userMsg := &models.Message{
@@ -131,7 +245,8 @@ func (s *ChatService) SendMessage(ctx context.Context, userID, convID, content s
 	}
 
 	reply, err := s.responder.Respond(ctx, ReplyRequest{
-		UserID: userID, Conversation: conv, Message: content, Style: opts.Style, History: history,
+		UserID: userID, Guest: opts.Guest, Conversation: conv, Message: content, Style: opts.Style,
+		History: history, OnStatus: opts.OnStatus,
 	}, streamWriter)
 	if err != nil {
 		return nil, err
@@ -169,4 +284,16 @@ func shortTitle(s string) string {
 		return s
 	}
 	return string([]rune(s)[:40]) + "..."
+}
+
+func uniqueIDs(ids []string) []string {
+	seen := make(map[string]bool, len(ids))
+	out := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if id != "" && !seen[id] {
+			seen[id] = true
+			out = append(out, id)
+		}
+	}
+	return out
 }

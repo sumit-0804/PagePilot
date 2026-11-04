@@ -79,7 +79,7 @@ type QuizQuestionDTO struct {
 
 type QuizSessionResponse struct {
 	SessionID       string            `json:"session_id"`
-	DocumentID      string            `json:"document_id"`
+	DocumentID      string            `json:"document_id,omitempty"`
 	Topic           string            `json:"topic"`
 	Difficulty      string            `json:"difficulty"`
 	TotalQuestions  int               `json:"total_questions"`
@@ -90,10 +90,8 @@ type QuizSessionResponse struct {
 	AllQuestions    []QuizQuestionDTO `json:"all_questions,omitempty"`
 }
 
+// GenerateQuiz builds a quiz from a document, or from general knowledge on a topic when DocumentID is empty.
 func (s *QuizService) GenerateQuiz(ctx context.Context, userID string, req GenerateQuizRequest) (*QuizSessionResponse, error) {
-	if _, err := s.docs.GetReady(ctx, userID, req.DocumentID); err != nil {
-		return nil, err
-	}
 	if req.NumQuestions <= 0 || req.NumQuestions > 20 {
 		req.NumQuestions = 5
 	}
@@ -119,22 +117,22 @@ func (s *QuizService) GenerateQuiz(ctx context.Context, userID string, req Gener
 	if err != nil {
 		return nil, err
 	}
-	excerpts, err := loadExcerpts(ctx, s.db, s.ragEngine, userID, req.DocumentID, req.Topic, 12)
+	excerpts, err := studySource(ctx, s.db, s.docs, s.ragEngine, userID, req.DocumentID, req.Topic, 12)
 	if err != nil {
 		return nil, err
 	}
 	pages := excerptPages(excerpts)
 
-	prompt := fmt.Sprintf(`Generate an interactive study quiz with %d questions based strictly on the document excerpts below.
+	prompt := fmt.Sprintf(`Generate an interactive study quiz with %d questions based strictly on the source below.
 Topic: %s
 Difficulty: %s
 Allowed question types: %s (mix them if more than one is allowed)
 
 RULES:
-1. Every question MUST be answerable from the excerpts.
+1. Every question MUST be answerable from the source.
 2. "mcq": exactly 4 options; correct_option is the index 0-3.
 3. "true_false": options must be ["True", "False"]; correct_option is 0 for True, 1 for False.
-4. "short_answer": options is []; correct_option is null; reference_answer is a concise model answer from the excerpts.
+4. "short_answer": options is []; correct_option is null; reference_answer is a concise model answer from the source.
 5. citation_page must be the page number shown in the excerpt that contains the answer.
 6. explanation says why the answer is right (and, for mcq, why the other options are wrong). Refer to options by their wording, never by number or letter.
 7. Output MUST be a JSON object matching this schema:
@@ -153,8 +151,7 @@ RULES:
   ]
 }
 
-EXCERPTS:
-%s`, req.NumQuestions, req.Topic, req.Difficulty, strings.Join(types, ", "), formatExcerpts(excerpts))
+%s`, req.NumQuestions, req.Topic, req.Difficulty, strings.Join(types, ", "), sourceBlock(excerpts))
 
 	llmResp, err := s.llmClient.GenerateJSON(ctx, []rag.ChatMessage{
 		{Role: "system", Content: "You are an expert exam creator. Respond ONLY with a JSON object."},
@@ -187,7 +184,7 @@ EXCERPTS:
 	session := &models.QuizSession{
 		ID:             uuid.NewString(),
 		UserID:         userID,
-		DocumentID:     req.DocumentID,
+		DocumentID:     optionalID(req.DocumentID),
 		ConversationID: convID,
 		Topic:          req.Topic,
 		Difficulty:     req.Difficulty,
@@ -280,7 +277,7 @@ func (s *QuizService) GetSession(ctx context.Context, userID, sessionID string) 
 
 	resp := &QuizSessionResponse{
 		SessionID:      session.ID,
-		DocumentID:     session.DocumentID,
+		DocumentID:     derefString(session.DocumentID),
 		Topic:          session.Topic,
 		Difficulty:     session.Difficulty,
 		TotalQuestions: session.TotalQuestions,

@@ -58,7 +58,8 @@ func loadExcerpts(ctx context.Context, db *gorm.DB, engine *rag.Engine, userID, 
 	return results, nil
 }
 
-// ownedConversationID validates an optional conversation link: it must be the user's and about the same document.
+// ownedConversationID validates an optional conversation link: it must be the user's and, when a
+// document is given, have that document attached.
 func ownedConversationID(ctx context.Context, db *gorm.DB, userID, docID, convID string) (*string, error) {
 	if convID == "" {
 		return nil, nil
@@ -66,15 +67,55 @@ func ownedConversationID(ctx context.Context, db *gorm.DB, userID, docID, convID
 	if _, err := uuid.Parse(convID); err != nil {
 		return nil, ErrNotFound
 	}
+	q := db.WithContext(ctx).Model(&models.Conversation{}).Where("id = ? AND user_id = ?", convID, userID)
+	if docID != "" {
+		q = q.Where("exists (select 1 from conversation_documents cd where cd.conversation_id = conversations.id and cd.document_id = ?)", docID)
+	}
 	var count int64
-	if err := db.WithContext(ctx).Model(&models.Conversation{}).
-		Where("id = ? AND user_id = ? AND document_id = ?", convID, userID, docID).Count(&count).Error; err != nil {
+	if err := q.Count(&count).Error; err != nil {
 		return nil, err
 	}
 	if count == 0 {
 		return nil, ErrNotFound
 	}
 	return &convID, nil
+}
+
+// studySource loads what a quiz or flashcard set is built from: document excerpts, or nothing when
+// there is no document and the model works from general knowledge on the topic.
+func studySource(ctx context.Context, db *gorm.DB, docs *DocumentService, engine *rag.Engine, userID, docID, topic string, limit int) ([]vectorstore.SearchResult, error) {
+	if docID == "" {
+		if strings.TrimSpace(topic) == "" {
+			return nil, fmt.Errorf("%w: a topic is required when no document is attached", ErrInvalidInput)
+		}
+		return nil, nil
+	}
+	if _, err := docs.GetReady(ctx, userID, docID); err != nil {
+		return nil, err
+	}
+	return loadExcerpts(ctx, db, engine, userID, docID, topic, limit)
+}
+
+// sourceBlock is the prompt section a study item is grounded in.
+func sourceBlock(excerpts []vectorstore.SearchResult) string {
+	if len(excerpts) == 0 {
+		return "SOURCE: no document. Use accurate, well-established general knowledge about the topic; set citation_page to 0."
+	}
+	return "EXCERPTS:\n" + formatExcerpts(excerpts)
+}
+
+func optionalID(id string) *string {
+	if id == "" {
+		return nil
+	}
+	return &id
+}
+
+func derefString(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
 }
 
 func formatExcerpts(results []vectorstore.SearchResult) string {

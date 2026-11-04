@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -149,6 +150,21 @@ func (a *API) DocumentFileHandler(w http.ResponseWriter, r *http.Request) {
 	respondJSON(w, http.StatusOK, map[string]string{"url": url})
 }
 
+// DocumentSectionHandler returns one page, slide or section of a non-PDF document for the text viewer.
+func (a *API) DocumentSectionHandler(w http.ResponseWriter, r *http.Request) {
+	n, err := strconv.Atoi(chi.URLParam(r, "n"))
+	if err != nil || n < 1 {
+		respondError(w, http.StatusBadRequest, "section number must be a positive integer")
+		return
+	}
+	sec, err := a.docService.Section(r.Context(), auth.UserID(r.Context()), chi.URLParam(r, "id"), n)
+	if err != nil {
+		a.fail(w, err)
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string]any{"number": sec.Number, "label": sec.Label, "text": sec.Text})
+}
+
 func (a *API) DeleteDocumentHandler(w http.ResponseWriter, r *http.Request) {
 	if err := a.docService.Delete(r.Context(), auth.UserID(r.Context()), chi.URLParam(r, "id")); err != nil {
 		a.fail(w, err)
@@ -161,22 +177,69 @@ func (a *API) DeleteDocumentHandler(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) CreateConversationHandler(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		DocumentID string `json:"document_id"`
-		Title      string `json:"title"`
+		DocumentIDs []string `json:"document_ids"`
+		Title       string   `json:"title"`
 	}
 	if !decodeJSON(w, r, &body) {
 		return
 	}
-	if body.DocumentID == "" {
-		respondError(w, http.StatusBadRequest, "document_id is required")
+	if auth.IsGuest(r.Context()) && len(body.DocumentIDs) > 0 {
+		a.fail(w, services.ErrLoginRequired)
 		return
 	}
-	conv, err := a.chatService.CreateConversation(r.Context(), auth.UserID(r.Context()), body.DocumentID, body.Title)
+	conv, err := a.chatService.CreateConversation(r.Context(), auth.UserID(r.Context()), body.DocumentIDs, body.Title)
 	if err != nil {
 		a.fail(w, err)
 		return
 	}
 	respondJSON(w, http.StatusCreated, conv)
+}
+
+func (a *API) AttachDocumentHandler(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		DocumentID string `json:"document_id"`
+	}
+	if !decodeJSON(w, r, &body) {
+		return
+	}
+	conv, err := a.chatService.AttachDocument(r.Context(), auth.UserID(r.Context()), chi.URLParam(r, "id"), body.DocumentID)
+	if err != nil {
+		a.fail(w, err)
+		return
+	}
+	respondJSON(w, http.StatusOK, conv)
+}
+
+func (a *API) DetachDocumentHandler(w http.ResponseWriter, r *http.Request) {
+	conv, err := a.chatService.DetachDocument(r.Context(), auth.UserID(r.Context()), chi.URLParam(r, "id"), chi.URLParam(r, "docId"))
+	if err != nil {
+		a.fail(w, err)
+		return
+	}
+	respondJSON(w, http.StatusOK, conv)
+}
+
+// ClaimGuestHandler moves a guest's chats to the account the caller just signed in to.
+// The guest's own token proves the caller had that guest session.
+func (a *API) ClaimGuestHandler(verifier *auth.Verifier) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			GuestToken string `json:"guest_token"`
+		}
+		if !decodeJSON(w, r, &body) {
+			return
+		}
+		guest, err := verifier.Verify(strings.TrimSpace(body.GuestToken))
+		if err != nil || !guest.Guest {
+			respondError(w, http.StatusBadRequest, "guest_token is not a valid guest session")
+			return
+		}
+		if err := a.chatService.ClaimGuestData(r.Context(), guest.UserID, auth.UserID(r.Context())); err != nil {
+			a.fail(w, err)
+			return
+		}
+		respondJSON(w, http.StatusOK, map[string]string{"message": "Guest chats moved to your account"})
+	}
 }
 
 func (a *API) ListConversationsHandler(w http.ResponseWriter, r *http.Request) {
@@ -218,11 +281,11 @@ func (a *API) DeleteConversationHandler(w http.ResponseWriter, r *http.Request) 
 
 func (a *API) ChatHandler(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		ConversationID string `json:"conversation_id"`
-		DocumentID     string `json:"document_id"`
-		Message        string `json:"message"`
-		Stream         bool   `json:"stream"`
-		Style          string `json:"style"` // optional explanation style, e.g. "simple", "exam"
+		ConversationID string   `json:"conversation_id"`
+		DocumentIDs    []string `json:"document_ids"` // attached when a new conversation is created
+		Message        string   `json:"message"`
+		Stream         bool     `json:"stream"`
+		Style          string   `json:"style"` // optional explanation style, e.g. "simple", "exam"
 	}
 	if !decodeJSON(w, r, &body) {
 		return
@@ -239,12 +302,20 @@ func (a *API) ChatHandler(w http.ResponseWriter, r *http.Request) {
 
 	ctx := r.Context()
 	userID := auth.UserID(ctx)
-	if body.ConversationID == "" {
-		if body.DocumentID == "" {
-			respondError(w, http.StatusBadRequest, "conversation_id or document_id is required")
+	guest := auth.IsGuest(ctx)
+	if guest {
+		// Checked up front so a guest past the limit doesn't leave empty conversations behind.
+		if len(body.DocumentIDs) > 0 {
+			a.fail(w, services.ErrLoginRequired)
 			return
 		}
-		conv, err := a.chatService.CreateConversation(ctx, userID, body.DocumentID, "")
+		if err := a.chatService.CheckGuestAllowance(ctx, userID); err != nil {
+			a.fail(w, err)
+			return
+		}
+	}
+	if body.ConversationID == "" {
+		conv, err := a.chatService.CreateConversation(ctx, userID, body.DocumentIDs, "")
 		if err != nil {
 			a.fail(w, err)
 			return
@@ -252,7 +323,7 @@ func (a *API) ChatHandler(w http.ResponseWriter, r *http.Request) {
 		body.ConversationID = conv.ID
 	}
 
-	opts := services.SendOptions{Style: body.Style}
+	opts := services.SendOptions{Style: body.Style, Guest: guest}
 	if !body.Stream && r.Header.Get("Accept") != "text/event-stream" {
 		result, err := a.chatService.SendMessage(ctx, userID, body.ConversationID, body.Message, opts, nil)
 		if err != nil {
@@ -316,6 +387,9 @@ func (a *API) ChatHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
+	opts.OnStatus = func(status string) error {
+		return send(map[string]any{"type": "status", "content": status})
+	}
 	result, err := a.chatService.SendMessage(ctx, userID, body.ConversationID, body.Message, opts, func(token string) error {
 		return send(map[string]any{"type": "token", "content": token})
 	})
@@ -459,12 +533,14 @@ func (a *API) fail(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, services.ErrNotFound):
 		respondError(w, http.StatusNotFound, "not found")
-	case errors.Is(err, services.ErrInvalidInput), errors.Is(err, services.ErrNotPDF), errors.Is(err, services.ErrEmptyFile):
+	case errors.Is(err, services.ErrInvalidInput), errors.Is(err, services.ErrUnsupportedFile), errors.Is(err, services.ErrEmptyFile):
 		respondError(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, services.ErrTooLarge):
 		respondError(w, http.StatusRequestEntityTooLarge, err.Error())
 	case errors.Is(err, services.ErrNotReady), errors.Is(err, services.ErrAlreadyAnswered):
 		respondError(w, http.StatusConflict, err.Error())
+	case errors.Is(err, services.ErrLoginRequired):
+		respondError(w, http.StatusForbidden, err.Error())
 	case errors.Is(err, embeddings.ErrDailyQuota):
 		respondError(w, http.StatusTooManyRequests, err.Error())
 	default:
@@ -480,9 +556,9 @@ func publicMessage(err error) string {
 	case errors.Is(err, services.ErrNotFound):
 		return "not found"
 	case errors.Is(err, services.ErrInvalidInput), errors.Is(err, services.ErrNotReady),
-		errors.Is(err, services.ErrAlreadyAnswered), errors.Is(err, services.ErrNotPDF),
+		errors.Is(err, services.ErrAlreadyAnswered), errors.Is(err, services.ErrUnsupportedFile),
 		errors.Is(err, services.ErrEmptyFile), errors.Is(err, services.ErrTooLarge),
-		errors.Is(err, embeddings.ErrDailyQuota):
+		errors.Is(err, embeddings.ErrDailyQuota), errors.Is(err, services.ErrLoginRequired):
 		return err.Error()
 	}
 	return "Something went wrong on the server. Try again in a moment; if it keeps happening, check the API logs."

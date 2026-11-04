@@ -4,6 +4,7 @@ import type {
   ChatDoneEvent,
   Citation,
   Conversation,
+  DocumentSection,
   DocumentStatusResponse,
   ExplanationStyle,
   FlashcardSet,
@@ -46,6 +47,8 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const text = await res.text()
   const body = text ? safeJSON(text) : null
   if (!res.ok) throw new ApiError(res.status, errorMessage(body, `Request failed (${res.status})`))
+  // A non-JSON success (e.g. a host's HTML page) means the request never reached the PagePilot API.
+  if (typeof body === 'string') throw new ApiError(res.status, "The PagePilot server sent an unexpected response. Check that VITE_API_URL points to the API.")
   return body as T
 }
 
@@ -65,16 +68,28 @@ function errorMessage(body: unknown, fallback: string): string {
 
 const json = (body: unknown) => JSON.stringify(body)
 
+/** The API's error code when a guest has used their free message. */
+export const LOGIN_REQUIRED = 'login_required'
+
+export const isLoginRequired = (err: unknown) => err instanceof ApiError && err.message === LOGIN_REQUIRED
+
 export interface StreamHandlers {
   onToken: (token: string) => void
+  /** Progress notes such as "Searching the web…", sent when the agent starts a tool. */
+  onStatus?: (status: string) => void
   signal?: AbortSignal
 }
 
+export interface ChatRequest {
+  /** Leave out to start a new conversation; the "done" event carries its id. */
+  conversation_id?: string
+  document_ids?: string[]
+  message: string
+  style?: ExplanationStyle
+}
+
 /** Sends a chat message and streams the reply over SSE. Resolves with the final "done" event. */
-async function streamChat(
-  body: { conversation_id: string; message: string; style?: ExplanationStyle },
-  { onToken, signal }: StreamHandlers,
-): Promise<ChatDoneEvent> {
+async function streamChat(body: ChatRequest, { onToken, onStatus, signal }: StreamHandlers): Promise<ChatDoneEvent> {
   const res = await fetch(`${API_BASE}/chat`, {
     method: 'POST',
     headers: { ...(await authHeader()), 'Content-Type': 'application/json', Accept: 'text/event-stream' },
@@ -100,7 +115,8 @@ async function streamChat(
       if (!data) continue
       const payload = JSON.parse(data.slice(5))
       if (payload.type === 'token') onToken(payload.content)
-      else if (payload.type === 'error') throw new ApiError(500, payload.error)
+      else if (payload.type === 'status') onStatus?.(payload.content)
+      else if (payload.type === 'error') throw new ApiError(payload.error === LOGIN_REQUIRED ? 403 : 500, payload.error)
       else if (payload.type === 'done') return payload as ChatDoneEvent
     }
   }
@@ -118,13 +134,23 @@ export const api = {
       return request<StudyDocument>('/documents/upload', { method: 'POST', body: form })
     },
     fileUrl: (id: string) => request<{ url: string }>(`/documents/${id}/file`),
+    section: (id: string, n: number) => request<DocumentSection>(`/documents/${id}/sections/${n}`),
     remove: (id: string) => request<void>(`/documents/${id}`, { method: 'DELETE' }),
   },
   conversations: {
     list: () => request<Conversation[]>('/conversations'),
     get: (id: string) => request<Conversation>(`/conversations/${id}`),
-    create: (documentId: string) => request<Conversation>('/conversations', { method: 'POST', body: json({ document_id: documentId }) }),
+    create: (body: { document_ids?: string[]; title?: string }) =>
+      request<Conversation>('/conversations', { method: 'POST', body: json(body) }),
+    attachDocument: (id: string, documentId: string) =>
+      request<void>(`/conversations/${id}/documents`, { method: 'POST', body: json({ document_id: documentId }) }),
+    detachDocument: (id: string, documentId: string) =>
+      request<void>(`/conversations/${id}/documents/${documentId}`, { method: 'DELETE' }),
     remove: (id: string) => request<void>(`/conversations/${id}`, { method: 'DELETE' }),
+  },
+  account: {
+    /** Moves a guest's chats to the signed-in account. */
+    claim: (guestToken: string) => request<void>('/account/claim', { method: 'POST', body: json({ guest_token: guestToken }) }),
   },
   chat: {
     stream: streamChat,
@@ -153,7 +179,8 @@ export const api = {
 export function parseCitations(message: Message): Citation[] {
   if (!message.citations_json) return []
   try {
-    return JSON.parse(message.citations_json) as Citation[]
+    const parsed: unknown = JSON.parse(message.citations_json)
+    return Array.isArray(parsed) ? (parsed as Citation[]) : []
   } catch {
     return []
   }

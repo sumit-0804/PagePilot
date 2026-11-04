@@ -22,6 +22,7 @@ import (
 	"github.com/pagepilot/backend/internal/services"
 	"github.com/pagepilot/backend/internal/storage"
 	"github.com/pagepilot/backend/internal/vectorstore"
+	"github.com/pagepilot/backend/internal/websearch"
 )
 
 func main() {
@@ -82,23 +83,28 @@ func run() error {
 	summaryService := services.NewSummaryService(db, docService, engine, groq)
 	progressService := services.NewProgressService(db, docService)
 
-	var responder services.Responder
-	switch cfg.ChatEngine {
-	case "adk":
-		llm, err := agents.NewGroqModel(ctx, cfg.GroqAPIKey, cfg.GroqModel)
-		if err != nil {
-			return fmt.Errorf("creating ADK model: %w", err)
-		}
-		responder, err = agents.NewEngine(llm, agents.Services{
-			RAG: engine, Quiz: quizService, Cards: flashcardService, Summaries: summaryService, Progress: progressService,
-		})
-		if err != nil {
-			return err
-		}
-	case "direct":
-		responder = services.NewDirectResponder(groq, engine, quizService, flashcardService, summaryService)
+	searcher, err := websearch.New(ctx, cfg)
+	if err != nil {
+		return err
 	}
-	log.Printf("Chat engine: %s (model %s)", cfg.ChatEngine, cfg.GroqModel)
+	if searcher != nil {
+		log.Printf("Web search: %s (limits %d RPM / %d RPD)", cfg.WebSearchModel, cfg.WebSearchRPM, cfg.WebSearchRPD)
+	} else {
+		log.Println("Web search: off")
+	}
+
+	llm, err := agents.NewGroqModel(ctx, cfg.GroqAPIKey, cfg.GroqModel)
+	if err != nil {
+		return fmt.Errorf("creating ADK model: %w", err)
+	}
+	responder, err := agents.NewEngine(llm, agents.Services{
+		RAG: engine, Quiz: quizService, Cards: flashcardService, Summaries: summaryService, Progress: progressService,
+		Web: searcher,
+	})
+	if err != nil {
+		return err
+	}
+	log.Printf("Chat agent: ADK (model %s)", cfg.GroqModel)
 	chatService := services.NewChatService(db, docService, responder)
 
 	if err := docService.ResumeUnfinished(ctx); err != nil {

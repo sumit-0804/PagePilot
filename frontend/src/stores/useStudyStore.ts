@@ -1,9 +1,20 @@
 import { create } from 'zustand'
 import { createJSONStorage, persist } from 'zustand/middleware'
-import type { ExplanationStyle } from '@/types'
+import type { DocumentFormat, ExplanationStyle } from '@/types'
 
-interface PdfTarget {
+export type AccentTheme = 'blue' | 'violet' | 'cyan' | 'emerald' | 'rose' | 'amber'
+
+function applyAccentAttribute(accent: AccentTheme) {
+  if (typeof document !== 'undefined') {
+    document.documentElement.dataset.accent = accent
+  }
+}
+
+export interface ViewerTarget {
   documentId: string
+  /** Picks the PDF or text viewer; looked up from the document list when unknown. */
+  format?: DocumentFormat
+  /** Page for PDFs, section number for other formats. */
   page: number
   /** True when opened from a citation, so the viewer marks the cited page. */
   fromCitation: boolean
@@ -11,6 +22,13 @@ interface PdfTarget {
   nonce: number
 }
 
+interface OpenOptions {
+  page?: number
+  fromCitation?: boolean
+  format?: DocumentFormat
+}
+
+/** A first message typed on a document page, sent once its new conversation opens. */
 interface PendingMessage {
   conversationId: string
   text: string
@@ -25,13 +43,17 @@ interface StudyState {
   mobileNavOpen: boolean
   setMobileNavOpen: (open: boolean) => void
 
-  pdf: PdfTarget | null
-  openPdf: (documentId: string, page?: number, fromCitation?: boolean) => void
-  closePdf: () => void
+  viewer: ViewerTarget | null
+  openViewer: (documentId: string, options?: OpenOptions) => void
+  closeViewer: () => void
 
   /** Explanation style applied to every question unless one is picked in the composer. */
   defaultStyle: ExplanationStyle | ''
   setDefaultStyle: (style: ExplanationStyle | '') => void
+
+  /** Vibrant color accent preset. */
+  accentTheme: AccentTheme
+  setAccentTheme: (accent: AccentTheme) => void
 
   /** First message typed on a document page, sent once its new conversation opens. */
   pendingMessage: PendingMessage | null
@@ -46,13 +68,19 @@ export const useStudyStore = create<StudyState>()(
       mobileNavOpen: false,
       setMobileNavOpen: (mobileNavOpen) => set({ mobileNavOpen }),
 
-      pdf: null,
-      openPdf: (documentId, page = 1, fromCitation = false) =>
-        set({ pdf: { documentId, page, fromCitation, nonce: Date.now() } }),
-      closePdf: () => set({ pdf: null }),
+      viewer: null,
+      openViewer: (documentId, { page = 1, fromCitation = false, format } = {}) =>
+        set({ viewer: { documentId, format, page, fromCitation, nonce: Date.now() } }),
+      closeViewer: () => set({ viewer: null }),
 
       defaultStyle: '',
       setDefaultStyle: (defaultStyle) => set({ defaultStyle }),
+
+      accentTheme: 'blue',
+      setAccentTheme: (accentTheme) => {
+        applyAccentAttribute(accentTheme)
+        set({ accentTheme })
+      },
 
       pendingMessage: null,
       setPendingMessage: (pendingMessage) => set({ pendingMessage }),
@@ -60,8 +88,17 @@ export const useStudyStore = create<StudyState>()(
     {
       name: 'pagepilot-ui',
       storage: createJSONStorage(() => localStorage),
-      // Only preferences survive a reload; the PDF panel and pending messages are per-visit.
-      partialize: (state) => ({ sidebarOpen: state.sidebarOpen, defaultStyle: state.defaultStyle }),
+      // Only preferences survive a reload; the viewer and pending messages are per-visit.
+      partialize: (state) => ({
+        sidebarOpen: state.sidebarOpen,
+        defaultStyle: state.defaultStyle,
+        accentTheme: state.accentTheme,
+      }),
+      onRehydrateStorage: () => (state) => {
+        if (state?.accentTheme) {
+          applyAccentAttribute(state.accentTheme)
+        }
+      },
     },
   ),
 )

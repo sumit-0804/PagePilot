@@ -10,17 +10,18 @@ import HistoryPage from '@/pages/HistoryPage'
 import SettingsPage from '@/pages/SettingsPage'
 import NotFoundPage from '@/pages/NotFoundPage'
 
+/** Pages for real accounts; a guest (anonymous) session counts as signed out. */
 function RequireAuth({ children }: { children: React.ReactNode }) {
-  const { session, loading } = useAuth()
+  const { isAccount, loading } = useAuth()
   const location = useLocation()
   if (loading) {
     return (
-      <div className="grid h-dvh place-items-center text-muted-foreground" role="status">
+      <div className="grid h-full place-items-center text-muted-foreground" role="status">
         <Loader2 className="size-5 animate-spin" aria-label="Loading" />
       </div>
     )
   }
-  if (!session) return <Navigate to="/login" replace state={{ from: location.pathname }} />
+  if (!isAccount) return <Navigate to="/login" replace state={{ from: location.pathname }} />
   return <>{children}</>
 }
 
@@ -29,18 +30,12 @@ export default function App() {
     <Routes>
       <Route path="/login" element={<AuthPage mode="signin" />} />
       <Route path="/signup" element={<AuthPage mode="signup" />} />
-      <Route
-        element={
-          <RequireAuth>
-            <AppShell />
-          </RequireAuth>
-        }
-      >
+      <Route element={<AppShell />}>
         <Route index element={<HomePage />} />
-        <Route path="documents/:documentId" element={<DocumentPage />} />
         <Route path="chat/:conversationId" element={<ChatPage />} />
-        <Route path="history" element={<HistoryPage />} />
-        <Route path="settings" element={<SettingsPage />} />
+        <Route path="documents/:documentId" element={<RequireAuth><DocumentPage /></RequireAuth>} />
+        <Route path="history" element={<RequireAuth><HistoryPage /></RequireAuth>} />
+        <Route path="settings" element={<RequireAuth><SettingsPage /></RequireAuth>} />
         <Route path="*" element={<NotFoundPage />} />
       </Route>
     </Routes>

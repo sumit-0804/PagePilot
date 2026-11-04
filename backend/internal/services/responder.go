@@ -12,10 +12,12 @@ import (
 // ReplyRequest is one chat message to answer, within a conversation the user owns.
 type ReplyRequest struct {
 	UserID       string
-	Conversation *models.Conversation
+	Guest        bool
+	Conversation *models.Conversation // with its attached Documents
 	Message      string
 	Style        string // requested explanation style; "" lets the responder decide
 	History      []rag.ChatMessage
+	OnStatus     func(status string) error // optional progress updates, e.g. "Searching the web"
 }
 
 // Reply is the assistant's answer, or a quiz, flashcard set or summary made for the user.
@@ -55,7 +57,7 @@ func SummaryReply(sum *SummaryResponse) *Reply {
 
 func subject(topic string) string {
 	if topic == "" {
-		return "this document"
+		return "this material"
 	}
 	return topic
 }

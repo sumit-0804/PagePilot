@@ -15,19 +15,39 @@ import (
 
 type ctxKey struct{}
 
-// UserID returns the authenticated Supabase user id set by Middleware, or "".
-func UserID(ctx context.Context) string {
-	id, _ := ctx.Value(ctxKey{}).(string)
+// Identity is who made a request. Guests are Supabase anonymous users: real ids, no account yet.
+type Identity struct {
+	UserID string
+	Guest  bool
+}
+
+func identity(ctx context.Context) Identity {
+	id, _ := ctx.Value(ctxKey{}).(Identity)
 	return id
 }
 
-// WithUserID stores a user id in the context (used by Middleware and tests).
+// UserID returns the authenticated Supabase user id set by Middleware, or "".
+func UserID(ctx context.Context) string {
+	return identity(ctx).UserID
+}
+
+// IsGuest reports whether the caller signed in anonymously.
+func IsGuest(ctx context.Context) bool {
+	return identity(ctx).Guest
+}
+
+// WithUserID stores a signed-up user's id in the context (used by tests).
 func WithUserID(ctx context.Context, userID string) context.Context {
-	return context.WithValue(ctx, ctxKey{}, userID)
+	return WithIdentity(ctx, Identity{UserID: userID})
+}
+
+func WithIdentity(ctx context.Context, id Identity) context.Context {
+	return context.WithValue(ctx, ctxKey{}, id)
 }
 
 type claims struct {
-	Role string `json:"role"`
+	Role        string `json:"role"`
+	IsAnonymous bool   `json:"is_anonymous"`
 	jwt.RegisteredClaims
 }
 
@@ -64,8 +84,8 @@ func NewVerifierWithKeyfunc(kf jwt.Keyfunc, issuer string) *Verifier {
 	return &Verifier{keyfunc: kf, issuer: issuer}
 }
 
-// Verify returns the user id (sub) of a valid, signed-in user's access token.
-func (v *Verifier) Verify(token string) (string, error) {
+// Verify returns who a valid access token belongs to, signed-up or anonymous.
+func (v *Verifier) Verify(token string) (Identity, error) {
 	var c claims
 	_, err := jwt.ParseWithClaims(token, &c, v.keyfunc,
 		jwt.WithValidMethods([]string{"ES256", "RS256", "HS256"}),
@@ -75,12 +95,12 @@ func (v *Verifier) Verify(token string) (string, error) {
 		jwt.WithLeeway(30*time.Second),
 	)
 	if err != nil {
-		return "", err
+		return Identity{}, err
 	}
 	if c.Role != "authenticated" || c.Subject == "" {
-		return "", errors.New("token is not for a signed-in user")
+		return Identity{}, errors.New("token is not for a signed-in user")
 	}
-	return c.Subject, nil
+	return Identity{UserID: c.Subject, Guest: c.IsAnonymous}, nil
 }
 
 // Middleware rejects requests without a valid "Authorization: Bearer <token>" header.
@@ -89,20 +109,31 @@ func (v *Verifier) Middleware(next http.Handler) http.Handler {
 		header := r.Header.Get("Authorization")
 		token, found := strings.CutPrefix(header, "Bearer ")
 		if !found || strings.TrimSpace(token) == "" {
-			unauthorized(w, "missing bearer token")
+			writeError(w, http.StatusUnauthorized, "missing bearer token")
 			return
 		}
-		userID, err := v.Verify(strings.TrimSpace(token))
+		id, err := v.Verify(strings.TrimSpace(token))
 		if err != nil {
-			unauthorized(w, "invalid or expired token")
+			writeError(w, http.StatusUnauthorized, "invalid or expired token")
 			return
 		}
-		next.ServeHTTP(w, r.WithContext(WithUserID(r.Context(), userID)))
+		next.ServeHTTP(w, r.WithContext(WithIdentity(r.Context(), id)))
 	})
 }
 
-func unauthorized(w http.ResponseWriter, msg string) {
+// RequireAccount blocks guests from features that need a signed-up account.
+func RequireAccount(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if IsGuest(r.Context()) {
+			writeError(w, http.StatusForbidden, "login_required")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func writeError(w http.ResponseWriter, status int, msg string) {
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusUnauthorized)
+	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(map[string]string{"error": msg})
 }

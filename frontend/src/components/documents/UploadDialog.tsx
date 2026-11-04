@@ -13,10 +13,10 @@ export function UploadDialog({
 }) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent>
+      <DialogContent className="rounded-2xl border-border/80 bg-card/95 backdrop-blur-xl sm:max-w-md">
         <DialogHeader>
-          <DialogTitle>Upload a PDF</DialogTitle>
-          <DialogDescription>It's ready to chat with once its pages are read and indexed.</DialogDescription>
+          <DialogTitle className="font-reading text-xl">Upload a document</DialogTitle>
+          <DialogDescription>It's ready to chat with once its text is read and indexed.</DialogDescription>
         </DialogHeader>
         <UploadDropzone
           compact

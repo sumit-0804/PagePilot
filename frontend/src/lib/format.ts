@@ -1,4 +1,4 @@
-import type { DocumentStatus, ExplanationStyle, StudyDocument } from '@/types'
+import type { DocumentFormat, DocumentStatus, ExplanationStyle, StudyDocument } from '@/types'
 
 const PROCESSING: DocumentStatus[] = ['UPLOADED', 'EXTRACTING', 'CHUNKING', 'EMBEDDING', 'INDEXING']
 
@@ -42,8 +42,16 @@ export function processingPercent(doc: Pick<StudyDocument, 'status' | 'chunks_to
 }
 
 export function displayName(filename: string) {
-  return filename.replace(/\.pdf$/i, '')
+  return filename.replace(/\.(pdf|docx|pptx|txt|md|csv|html?)$/i, '')
 }
+
+/** What a document's numbered parts are called: pages, slides or sections. */
+export function sectionNoun(format: DocumentFormat | undefined, count = 1): string {
+  const noun = format === 'pptx' ? 'slide' : !format || format === 'pdf' ? 'page' : 'section'
+  return count === 1 ? noun : `${noun}s`
+}
+
+export const UPLOAD_EXTENSIONS = ['.pdf', '.docx', '.pptx', '.txt', '.md', '.csv', '.html']
 
 const rtf = new Intl.RelativeTimeFormat(undefined, { numeric: 'auto' })
 

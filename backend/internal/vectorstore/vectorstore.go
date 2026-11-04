@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"slices"
 	"sort"
 	"sync"
 
@@ -23,14 +24,14 @@ type SearchResult struct {
 	Score        float32 `json:"score"`
 }
 
-// VectorStore saves embedded chunks and searches within a single user's document.
+// VectorStore saves embedded chunks and searches within some of a single user's documents.
 type VectorStore interface {
 	// ReplaceChunks atomically replaces all chunks of a document; each chunk carries its embedding.
 	ReplaceChunks(ctx context.Context, documentID string, chunks []models.DocumentChunk) error
-	Search(ctx context.Context, queryEmbedding []float32, userID, documentID string, limit int) ([]SearchResult, error)
+	Search(ctx context.Context, queryEmbedding []float32, userID string, documentIDs []string, limit int) ([]SearchResult, error)
 }
 
-var ErrScopeRequired = errors.New("vector search requires both user_id and document_id")
+var ErrScopeRequired = errors.New("vector search requires a user_id and at least one document_id")
 
 // PgVectorStore keeps vectors in document_chunks.embedding (pgvector).
 type PgVectorStore struct {
@@ -56,8 +57,8 @@ func (p *PgVectorStore) ReplaceChunks(ctx context.Context, documentID string, ch
 	})
 }
 
-func (p *PgVectorStore) Search(ctx context.Context, queryEmbedding []float32, userID, documentID string, limit int) ([]SearchResult, error) {
-	if userID == "" || documentID == "" {
+func (p *PgVectorStore) Search(ctx context.Context, queryEmbedding []float32, userID string, documentIDs []string, limit int) ([]SearchResult, error) {
+	if userID == "" || len(documentIDs) == 0 {
 		return nil, ErrScopeRequired
 	}
 	if limit <= 0 {
@@ -69,9 +70,9 @@ func (p *PgVectorStore) Search(ctx context.Context, queryEmbedding []float32, us
 		select id as chunk_id, document_id, document_name, page_number, chunk_index, chunk_text,
 		       1 - (embedding <=> ?) as score
 		from document_chunks
-		where user_id = ? and document_id = ?
+		where user_id = ? and document_id in ?
 		order by embedding <=> ?
-		limit ?`, vec, userID, documentID, vec, limit).Scan(&results).Error
+		limit ?`, vec, userID, documentIDs, vec, limit).Scan(&results).Error
 	if err != nil {
 		return nil, fmt.Errorf("vector search: %w", err)
 	}
@@ -101,8 +102,8 @@ func (m *MemoryVectorStore) ReplaceChunks(_ context.Context, documentID string, 
 	return nil
 }
 
-func (m *MemoryVectorStore) Search(_ context.Context, queryEmbedding []float32, userID, documentID string, limit int) ([]SearchResult, error) {
-	if userID == "" || documentID == "" {
+func (m *MemoryVectorStore) Search(_ context.Context, queryEmbedding []float32, userID string, documentIDs []string, limit int) ([]SearchResult, error) {
+	if userID == "" || len(documentIDs) == 0 {
 		return nil, ErrScopeRequired
 	}
 	m.mu.RLock()
@@ -110,7 +111,7 @@ func (m *MemoryVectorStore) Search(_ context.Context, queryEmbedding []float32, 
 
 	var results []SearchResult
 	for _, c := range m.chunks {
-		if c.UserID != userID || c.DocumentID != documentID {
+		if c.UserID != userID || !slices.Contains(documentIDs, c.DocumentID) {
 			continue
 		}
 		results = append(results, SearchResult{

@@ -10,21 +10,23 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/openai/openai-go/v3/option"
+	"github.com/pagepilot/backend/internal/models"
 	"github.com/pagepilot/backend/internal/rag"
 	"github.com/pagepilot/backend/internal/services"
-	"github.com/pagepilot/backend/internal/vectorstore"
+	"github.com/pagepilot/backend/internal/websearch"
 	"google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/agent/llmagent"
 	"google.golang.org/adk/v2/model"
 	"google.golang.org/adk/v2/model/openaimodel"
 	"google.golang.org/adk/v2/runner"
 	"google.golang.org/adk/v2/session"
+	"google.golang.org/adk/v2/tool"
 	"google.golang.org/genai"
 )
 
 const (
 	appName   = "pagepilot"
-	agentName = "study_tutor"
+	agentName = "pagepilot_assistant"
 	// Bounds tool loops: a few searches, maybe one study tool, and the answer.
 	maxLLMCalls  = 8
 	historyTurns = 10
@@ -37,6 +39,7 @@ type Services struct {
 	Cards     *services.FlashcardService
 	Summaries *services.SummaryService
 	Progress  *services.ProgressService
+	Web       websearch.Searcher // nil turns the web_search tool off
 }
 
 // NewGroqModel talks to Groq through ADK's OpenAI-compatible Chat Completions model.
@@ -67,11 +70,12 @@ func NewEngine(llm model.LLM, svc Services) (*Engine, error) {
 	}
 	tutor, err := llmagent.New(llmagent.Config{
 		Name:                  agentName,
-		Description:           "Study tutor for one uploaded PDF: answers from the document, and creates quizzes, flashcards and summaries.",
+		Description:           "Chat assistant and tutor: answers directly, searches attached documents and the web, and creates quizzes, flashcards and summaries.",
 		Model:                 llm,
-		InstructionProvider:   instruction,
+		InstructionProvider:   instruction(svc.Web != nil),
 		GenerateContentConfig: &genai.GenerateContentConfig{Temperature: genai.Ptr[float32](0.2)},
 		Tools:                 tools,
+		BeforeToolCallbacks:   []llmagent.BeforeToolCallback{reportStatus},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("creating tutor agent: %w", err)
@@ -85,15 +89,17 @@ func NewEngine(llm model.LLM, svc Services) (*Engine, error) {
 	return &Engine{runner: r, sessions: sessions}, nil
 }
 
-// turn is what one chat request's tools need (whose document) and collect (pages, study items).
+// turn is what one chat request's tools need (whose documents) and collect (numbered sources, study items).
 type turn struct {
 	userID         string
-	documentID     string
+	guest          bool
 	conversationID string
 	style          string
+	docs           []models.Document
+	onStatus       func(string) error
 
 	mu        sync.Mutex
-	retrieved []vectorstore.SearchResult
+	sources   []models.Citation
 	studyItem *services.Reply
 }
 
@@ -107,10 +113,32 @@ func turnFrom(ctx context.Context) (*turn, error) {
 	return t, nil
 }
 
-func (t *turn) addRetrieved(results []vectorstore.SearchResult) {
+// addSource numbers a source for this answer; the same page or URL keeps its first number.
+func (t *turn) addSource(c models.Citation) int {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	t.retrieved = append(t.retrieved, results...)
+	for _, s := range t.sources {
+		if s.Kind == c.Kind && s.URL == c.URL && s.DocumentID == c.DocumentID && s.PageNumber == c.PageNumber {
+			return s.N
+		}
+	}
+	c.N = len(t.sources) + 1
+	t.sources = append(t.sources, c)
+	return c.N
+}
+
+// reportStatus tells the user what the agent is doing before each tool runs.
+func reportStatus(ctx agent.Context, tl tool.Tool, _ map[string]any) (map[string]any, error) {
+	t, err := turnFrom(ctx)
+	if err != nil || t.onStatus == nil {
+		return nil, nil
+	}
+	if status, ok := statusFor[tl.Name()]; ok {
+		if err := t.onStatus(status); err != nil {
+			log.Printf("sending status: %v", err)
+		}
+	}
+	return nil, nil
 }
 
 func (t *turn) setStudyItem(r *services.Reply) {
@@ -120,7 +148,10 @@ func (t *turn) setStudyItem(r *services.Reply) {
 }
 
 func (e *Engine) Respond(ctx context.Context, req services.ReplyRequest, streamWriter func(string) error) (*services.Reply, error) {
-	t := &turn{userID: req.UserID, documentID: req.Conversation.DocumentID, conversationID: req.Conversation.ID, style: req.Style}
+	t := &turn{
+		userID: req.UserID, guest: req.Guest, conversationID: req.Conversation.ID, style: req.Style,
+		docs: req.Conversation.Documents, onStatus: req.OnStatus,
+	}
 	ctx = context.WithValue(ctx, turnKey{}, t)
 
 	sessionID := uuid.NewString()
@@ -170,10 +201,10 @@ func (e *Engine) Respond(ctx context.Context, req services.ReplyRequest, streamW
 		return t.studyItem, nil
 	}
 	if strings.TrimSpace(final) == "" {
-		return nil, errors.New("the tutor didn't produce an answer, please try again")
+		return nil, errors.New("the assistant didn't produce an answer, please try again")
 	}
 	answer := rag.NormalizeCitations(final)
-	return &services.Reply{Content: answer, Type: "chat", Citations: rag.FilterCitations(answer, rag.CitationsFor(t.retrieved))}, nil
+	return &services.Reply{Content: answer, Type: "chat", Citations: rag.FilterSources(answer, t.sources)}, nil
 }
 
 // loadHistory replays recent chat turns from Postgres into the request's ADK session.
@@ -208,20 +239,39 @@ func textOf(c *genai.Content) string {
 	return b.String()
 }
 
-func instruction(ctx agent.ReadonlyContext) (string, error) {
-	t, err := turnFrom(ctx)
-	if err != nil {
-		return "", err
-	}
-	return `You are PagePilot, a study tutor for one PDF the student uploaded.
+func instruction(webSearch bool) func(agent.ReadonlyContext) (string, error) {
+	return func(ctx agent.ReadonlyContext) (string, error) {
+		t, err := turnFrom(ctx)
+		if err != nil {
+			return "", err
+		}
+		var b strings.Builder
+		b.WriteString(`You are PagePilot, a helpful chat assistant and study tutor.
+Decide for each message what it needs: answer directly from your own knowledge when you can, search the attached documents when the question is about them, and use the web for recent or uncertain facts. You may call several tools and search again with different words before answering.
 
+`)
+		if len(t.docs) == 0 {
+			b.WriteString("ATTACHED DOCUMENTS: none.\n")
+		} else {
+			b.WriteString("ATTACHED DOCUMENTS (id, name, format):\n")
+			for _, d := range t.docs {
+				fmt.Fprintf(&b, "- %s, %q, %s, %d %ss\n", d.ID, d.Filename, d.Format, d.PageCount, strings.ToLower(d.SectionLabel()))
+			}
+		}
+		b.WriteString(`
 TOOLS:
-- search_document: finds passages in the PDF. You only see the chat text of earlier turns, never their passages, so call search_document in THIS turn before every reply that uses the document, including follow-ups such as "explain it more simply", "give another example" or "go deeper". Pass a standalone query that names the subject (use the conversation to resolve "it" or "that"). If the passages don't cover the question, search again with different words. Cite each passage with its "cite" value, exactly as given.
-- create_quiz: when the student wants to be quizzed or tested ("test my understanding", "quiz me").
-- create_flashcards: when the student wants flashcards.
-- summarize_document: when the student wants a summary, notes, revision notes, definitions, key concepts, formulas or exam notes for the document.
-- get_study_progress: when the student asks how they are doing, what to review, or what their weak areas are. Explain the result in plain words.
-For a quiz, flashcards or a summary, take the topic from the message or the conversation; leave it empty for the whole document.
+- search_documents: finds passages in the attached documents. You only see the chat text of earlier turns, never their passages, so search again in THIS turn before every reply that uses the documents, including follow-ups such as "explain it more simply". Pass a standalone query that names the subject (resolve "it" or "that" from the conversation).
+`)
+		if webSearch {
+			b.WriteString("- web_search: searches the live web. Use it for news, current events, prices, versions, dates after your training, or facts you are unsure of.\n")
+		}
+		b.WriteString(`- create_quiz / create_flashcards: when the user wants to be quizzed or wants flashcards. Use an attached document's id when they mean the document; otherwise pass a topic taken from the message or conversation and leave document_id empty.
+- summarize_document: when the user wants a summary or notes for an attached document.
+- get_study_progress: when the user asks how they are doing on an attached document.
+- list_documents: when you need the attached documents' details.
 
-` + rag.GroundingRules + "\n" + rag.StyleRule(t.style), nil
+`)
+		b.WriteString(rag.SourceRules + "\n" + rag.StyleRule(t.style))
+		return b.String(), nil
+	}
 }

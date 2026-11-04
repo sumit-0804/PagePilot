@@ -20,6 +20,7 @@ import (
 	"github.com/pagepilot/backend/internal/services"
 	"github.com/pagepilot/backend/internal/storage"
 	"github.com/pagepilot/backend/internal/vectorstore"
+	"github.com/pagepilot/backend/internal/websearch"
 	"google.golang.org/adk/v2/model"
 	"google.golang.org/genai"
 	"gorm.io/gorm"
@@ -148,10 +149,18 @@ func setup(t *testing.T, serviceLLM rag.LLMClient) *fixture {
 		time.Sleep(100 * time.Millisecond)
 	}
 
-	conv := &models.Conversation{ID: uuid.NewString(), UserID: user, DocumentID: doc.ID, Title: "test"}
+	conv := &models.Conversation{ID: uuid.NewString(), UserID: user, Title: "test"}
 	if err := db.Create(conv).Error; err != nil {
 		t.Fatal(err)
 	}
+	if err := db.Create(&models.ConversationDocument{ConversationID: conv.ID, DocumentID: doc.ID, UserID: user}).Error; err != nil {
+		t.Fatal(err)
+	}
+	ready, err := docs.Get(context.Background(), user, doc.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conv.Documents = []models.Document{*ready}
 	return &fixture{
 		db:   db,
 		conv: conv,
@@ -191,19 +200,38 @@ func functionResponse(req *model.LLMRequest, name string) map[string]any {
 	return nil
 }
 
+// citeFor finds the marker the search tool gave a page, e.g. "[2]".
+func citeFor(t *testing.T, searched map[string]any, location string) string {
+	t.Helper()
+	excerpts, _ := searched["excerpts"].([]any)
+	for _, e := range excerpts {
+		ex, _ := e.(map[string]any)
+		if ex["location"] == location {
+			return ex["cite"].(string)
+		}
+	}
+	raw, _ := json.Marshal(searched)
+	t.Fatalf("no excerpt for %s in %s", location, raw)
+	return ""
+}
+
 func TestAgentAnswersFromSearchedPages(t *testing.T) {
 	f := setup(t, jsonLLM{})
 	var searched map[string]any
+	var statuses []string
 	m := &scriptedModel{steps: []func(*model.LLMRequest) ([]*model.LLMResponse, error){
-		callTool("search_document", map[string]any{"query": "Robert Hooke first described cells in 1665 observing cork"}),
+		callTool("search_documents", map[string]any{"query": "Robert Hooke first described cells in 1665 observing cork"}),
 		func(req *model.LLMRequest) ([]*model.LLMResponse, error) {
-			searched = functionResponse(req, "search_document")
-			return answer("Robert Hooke described cells in 1665 ", "【Page 2】. ", "Invented claim [Page 99].")(req)
+			searched = functionResponse(req, "search_documents")
+			n := strings.Trim(citeFor(t, searched, "Page 2"), "[]")
+			return answer("Robert Hooke described cells in 1665 ", "【"+n+"†L1-L4】. ", "Invented claim [99].")(req)
 		},
 	}}
 
+	req := f.request("Explain who first described cells", "simple")
+	req.OnStatus = func(s string) error { statuses = append(statuses, s); return nil }
 	var streamed []string
-	reply, err := f.engine(t, m).Respond(context.Background(), f.request("Explain who first described cells", "simple"), func(tok string) error {
+	reply, err := f.engine(t, m).Respond(context.Background(), req, func(tok string) error {
 		streamed = append(streamed, tok)
 		return nil
 	})
@@ -211,22 +239,60 @@ func TestAgentAnswersFromSearchedPages(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	raw, _ := json.Marshal(searched)
-	if !strings.Contains(string(raw), `"page":2`) {
-		t.Fatalf("the search tool should have returned page 2 to the model, got %s", raw)
-	}
-	if reply.Type != "chat" || len(reply.Citations) != 1 || reply.Citations[0].PageNumber != 2 {
+	cite := citeFor(t, searched, "Page 2")
+	if reply.Type != "chat" || len(reply.Citations) != 1 || reply.Citations[0].PageNumber != 2 ||
+		reply.Citations[0].Kind != models.CitationDocument || reply.Citations[0].Label != "Page" {
 		t.Fatalf("only the retrieved page 2 may be cited: %+v", reply)
 	}
-	if !strings.Contains(reply.Content, "[Page 2]") {
-		t.Fatalf("saved answer should have normalized citations: %q", reply.Content)
+	if !strings.Contains(reply.Content, cite) {
+		t.Fatalf("saved answer should have normalized the %s marker: %q", cite, reply.Content)
 	}
 	if len(streamed) < 3 {
 		t.Fatalf("expected streamed chunks, got %v", streamed)
 	}
-	system := m.requests[0].Config.SystemInstruction
-	if system == nil || !strings.Contains(textOf(system), rag.ExplanationStyles["simple"]) {
-		t.Fatal("the requested style should be in the system instruction")
+	if len(statuses) != 1 || statuses[0] != "Searching your documents" {
+		t.Fatalf("expected a search status, got %v", statuses)
+	}
+	system := textOf(m.requests[0].Config.SystemInstruction)
+	if !strings.Contains(system, rag.ExplanationStyles["simple"]) || !strings.Contains(system, "Biology Handbook.pdf") {
+		t.Fatal("the requested style and attached documents should be in the system instruction")
+	}
+	if strings.Contains(system, "web_search") {
+		t.Fatal("web search is off in this engine, so the prompt must not offer it")
+	}
+}
+
+type fakeSearcher struct{}
+
+func (fakeSearcher) Search(context.Context, string) (*websearch.Result, error) {
+	return &websearch.Result{
+		Answer:  "Go 1.27 is the latest release.",
+		Sources: []websearch.Source{{Title: "Go releases", URL: "https://go.dev/doc/devel/release"}},
+	}, nil
+}
+
+func TestAgentSearchesTheWebWithoutDocuments(t *testing.T) {
+	f := setup(t, jsonLLM{})
+	f.svc.Web = fakeSearcher{}
+	f.conv.Documents = nil
+	m := &scriptedModel{steps: []func(*model.LLMRequest) ([]*model.LLMResponse, error){
+		callTool("web_search", map[string]any{"query": "latest Go release"}),
+		func(req *model.LLMRequest) ([]*model.LLMResponse, error) {
+			if functionResponse(req, "web_search") == nil {
+				return nil, errors.New("web result missing from the model input")
+			}
+			return answer("The latest Go is 1.27 [1].")(req)
+		},
+	}}
+	reply, err := f.engine(t, m).Respond(context.Background(), f.request("What's the latest Go version?", ""), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reply.Citations) != 1 || reply.Citations[0].Kind != models.CitationWeb || reply.Citations[0].URL != "https://go.dev/doc/devel/release" {
+		t.Fatalf("expected one web citation: %+v", reply.Citations)
+	}
+	if !strings.Contains(textOf(m.requests[0].Config.SystemInstruction), "ATTACHED DOCUMENTS: none") {
+		t.Fatal("the prompt should say no documents are attached")
 	}
 }
 
@@ -258,7 +324,7 @@ func TestAgentCreatesQuizAndEndsTurn(t *testing.T) {
 	  {"question": "Where is ATP made?", "options": ["Mitochondria", "Ribosome", "Nucleus", "Wall"], "correct_option": 0, "citation_page": 4}
 	]}`})
 	m := &scriptedModel{steps: []func(*model.LLMRequest) ([]*model.LLMResponse, error){
-		callTool("create_quiz", map[string]any{"topic": "cells", "num_questions": 2}),
+		callTool("create_quiz", map[string]any{"document_id": f.conv.Documents[0].ID, "topic": "cells", "num_questions": 2}),
 	}}
 
 	var streamed []string

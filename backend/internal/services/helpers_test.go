@@ -64,13 +64,13 @@ func createUser(t *testing.T, db *gorm.DB) string {
 type fakeLLM struct {
 	answer string // Generate and Stream
 	json   string // quiz and flashcard generation
-	route  string // chat router; defaults to a plain question
 	grade  string // short-answer grading
 	err    error
 
 	generateCalls  int
 	generatePrompt []string // user prompts sent to Generate
 	lastSystem     string   // system prompt of the last Generate or Stream call
+	lastJSONPrompt string   // user prompt of the last GenerateJSON call
 }
 
 func (f *fakeLLM) Generate(_ context.Context, msgs []rag.ChatMessage) (string, error) {
@@ -84,17 +84,14 @@ func (f *fakeLLM) GenerateJSON(_ context.Context, msgs []rag.ChatMessage) (strin
 	if f.err != nil {
 		return "", f.err
 	}
-	switch system := msgs[0].Content; {
-	case strings.Contains(system, "intent router"):
-		if f.route == "" {
-			return `{"intent": "question"}`, nil
-		}
-		return f.route, nil
-	case strings.Contains(system, "answer grader"):
+	f.lastJSONPrompt = msgs[len(msgs)-1].Content
+	if strings.Contains(msgs[0].Content, "answer grader") {
 		return f.grade, nil
 	}
 	return f.json, nil
 }
+
+func contains(s, sub string) bool { return strings.Contains(s, sub) }
 
 func (f *fakeLLM) Stream(_ context.Context, msgs []rag.ChatMessage, onChunk func(string) error) (string, error) {
 	f.lastSystem = msgs[0].Content
@@ -115,6 +112,7 @@ type harness struct {
 	engine    *rag.Engine
 	docs      *DocumentService
 	chat      *ChatService
+	responder *stubResponder
 	quiz      *QuizService
 	cards     *FlashcardService
 	summaries *SummaryService
@@ -133,12 +131,14 @@ func newHarness(t *testing.T) *harness {
 	quiz := NewQuizService(db, docs, engine, llm)
 	cards := NewFlashcardService(db, docs, engine, llm)
 	summaries := NewSummaryService(db, docs, engine, llm)
+	responder := &stubResponder{reply: &Reply{Content: "OK", Type: "chat"}}
 	return &harness{
 		db:        db,
 		llm:       llm,
 		engine:    engine,
 		docs:      docs,
-		chat:      NewChatService(db, docs, NewDirectResponder(llm, engine, quiz, cards, summaries)),
+		chat:      NewChatService(db, docs, responder),
+		responder: responder,
 		quiz:      quiz,
 		cards:     cards,
 		summaries: summaries,
@@ -166,9 +166,16 @@ func (h *harness) upload(t *testing.T, userID string, data []byte) *models.Docum
 	if err != nil {
 		t.Fatalf("upload: %v", err)
 	}
+	return h.waitReady(t, userID, doc.ID)
+}
+
+// waitReady polls until background processing finishes.
+func (h *harness) waitReady(t *testing.T, userID, docID string) *models.Document {
+	t.Helper()
+	ctx := context.Background()
 	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
-		current, err := h.docs.Get(ctx, userID, doc.ID)
+		current, err := h.docs.Get(ctx, userID, docID)
 		if err != nil {
 			t.Fatalf("polling status: %v", err)
 		}
@@ -177,7 +184,7 @@ func (h *harness) upload(t *testing.T, userID string, data []byte) *models.Docum
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	t.Fatalf("document %s did not finish processing", doc.ID)
+	t.Fatalf("document %s did not finish processing", docID)
 	return nil
 }
 

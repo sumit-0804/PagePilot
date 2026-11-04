@@ -2,10 +2,13 @@
 
 export type DocumentStatus = 'UPLOADED' | 'EXTRACTING' | 'CHUNKING' | 'EMBEDDING' | 'INDEXING' | 'READY' | 'FAILED'
 
+export type DocumentFormat = 'pdf' | 'docx' | 'pptx' | 'txt' | 'md' | 'csv' | 'html'
+
 export interface StudyDocument {
   id: string
   user_id: string
   filename: string
+  format: DocumentFormat
   file_size: number
   page_count: number
   status: DocumentStatus
@@ -29,11 +32,28 @@ export interface DocumentStatusResponse {
   updated_at: string
 }
 
+/**
+ * A source behind an answer: numbered [n] markers match by `n`; summaries and older
+ * messages use [Page N] markers, have no `n`, and match by `page_number`.
+ */
 export interface Citation {
-  document_id: string
-  document_name: string
-  page_number: number
+  n?: number
+  /** Missing on older citations, which are always document pages. */
+  kind?: 'document' | 'web'
+  document_id?: string
+  document_name?: string
+  page_number?: number
+  /** Section label from the document, e.g. "Slide 4" or "Page 3". */
+  label?: string
+  url?: string
+  title?: string
   snippet: string
+}
+
+export interface DocumentSection {
+  number: number
+  label: string
+  text: string
 }
 
 export type MessageType = 'chat' | 'quiz' | 'flashcards' | 'summary'
@@ -52,10 +72,11 @@ export interface Message {
 export interface Conversation {
   id: string
   user_id: string
-  document_id: string
   title: string
   created_at: string
   updated_at: string
+  /** Attached documents; the list endpoint may leave this out. */
+  documents?: StudyDocument[]
   messages?: Message[]
 }
 
@@ -99,7 +120,8 @@ export interface QuizQuestion {
 
 export interface QuizSession {
   session_id: string
-  document_id: string
+  /** Empty when the quiz was made without a document. */
+  document_id?: string | null
   topic: string
   difficulty: string
   total_questions: number
@@ -144,7 +166,7 @@ export interface Flashcard {
 export interface FlashcardSet {
   id: string
   user_id: string
-  document_id: string
+  document_id?: string | null
   conversation_id?: string
   title: string
   topic: string

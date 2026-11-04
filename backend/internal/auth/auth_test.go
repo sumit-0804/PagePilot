@@ -77,3 +77,31 @@ func TestMiddleware(t *testing.T) {
 		})
 	}
 }
+
+func TestGuestsAreIdentifiedAndKeptFromAccountRoutes(t *testing.T) {
+	v := testVerifier()
+	guest := signToken(t, func(c *claims) { c.IsAnonymous = true })
+	id, err := v.Verify(guest)
+	if err != nil || !id.Guest {
+		t.Fatalf("anonymous token: %+v, %v", id, err)
+	}
+
+	reached := false
+	handler := v.Middleware(RequireAccount(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { reached = true })))
+	for _, tc := range []struct {
+		token  string
+		status int
+	}{
+		{guest, http.StatusForbidden},
+		{signToken(t, nil), http.StatusOK},
+	} {
+		reached = false
+		req := httptest.NewRequest(http.MethodPost, "/api/documents/upload", nil)
+		req.Header.Set("Authorization", "Bearer "+tc.token)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != tc.status || reached != (tc.status == http.StatusOK) {
+			t.Fatalf("expected %d, got %d (reached=%v)", tc.status, rec.Code, reached)
+		}
+	}
+}

@@ -9,7 +9,27 @@ export default defineConfig({
   // Share the repo-root .env; Vite only exposes VITE_* variables to the browser.
   envDir: '..',
   resolve: {
-    alias: { '@': path.resolve(__dirname, './src') },
+    alias: { '@': path.resolve(import.meta.dirname, './src') },
+  },
+  build: {
+    chunkSizeWarningLimit: 700,
+    rolldownOptions: {
+      output: {
+        manualChunks(id) {
+          if (!id.includes('node_modules')) return undefined
+          if (id.includes('katex') || id.includes('rehype') || id.includes('remark') || id.includes('react-markdown') || id.includes('micromark') || id.includes('mdast') || id.includes('hast')) {
+            return 'markdown'
+          }
+          if (id.includes('@supabase')) {
+            return 'supabase'
+          }
+          if (id.includes('motion') || id.includes('framer-motion')) {
+            return 'motion'
+          }
+          return undefined
+        },
+      },
+    },
   },
   server: {
     port: 5173,

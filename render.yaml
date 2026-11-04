@@ -29,8 +29,6 @@ services:
         sync: false
       - key: GROQ_MODEL
         value: openai/gpt-oss-120b
-      - key: CHAT_ENGINE
-        value: adk
       - key: GEMINI_API_KEY
         sync: false
       - key: EMBEDDING_PROVIDER
@@ -62,3 +60,11 @@ services:
         value: "10"
       - key: OCR_MAX_PAGES
         value: "100"
+      - key: WEB_SEARCH_PROVIDER
+        value: gemini
+      - key: WEB_SEARCH_MODEL
+        value: gemini-3.5-flash-lite
+      - key: WEB_SEARCH_RPM
+        sync: false
+      - key: WEB_SEARCH_RPD
+        sync: false

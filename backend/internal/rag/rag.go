@@ -77,11 +77,16 @@ func StyleRule(style string) string {
 
 // Retrieve finds the chunks of one user's document most relevant to the query.
 func (e *Engine) Retrieve(ctx context.Context, query, userID, docID string, limit int) ([]vectorstore.SearchResult, error) {
+	return e.RetrieveMany(ctx, query, userID, []string{docID}, limit)
+}
+
+// RetrieveMany searches several of one user's documents at once.
+func (e *Engine) RetrieveMany(ctx context.Context, query, userID string, docIDs []string, limit int) ([]vectorstore.SearchResult, error) {
 	queryVec, err := e.embedder.EmbedQuery(ctx, query)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate query embedding: %w", err)
 	}
-	results, err := e.vectorStore.Search(ctx, queryVec, userID, docID, limit)
+	results, err := e.vectorStore.Search(ctx, queryVec, userID, docIDs, limit)
 	if err != nil {
 		return nil, fmt.Errorf("vector search failed: %w", err)
 	}
@@ -185,8 +190,42 @@ var bracketNormalizer = strings.NewReplacer("【", "[", "】", "]", "［", "[", 
 // A model given a ready-made "[Page 5]" label sometimes wraps it again as "[[Page 5]]".
 var doubledCitationRe = regexp.MustCompile(`(?i)\[[\s\p{Zs}]*(\[[\s\p{Zs}]*pages?[^\[\]]*\])[\s\p{Zs}]*\]`)
 
+// gpt-oss also writes source markers like 【1†L4-L9】; only the number matters.
+var daggerCitationRe = regexp.MustCompile(`\[(\d+)†[^\[\]]*\]`)
+
 func NormalizeCitations(answer string) string {
-	return doubledCitationRe.ReplaceAllString(bracketNormalizer.Replace(answer), "$1")
+	answer = doubledCitationRe.ReplaceAllString(bracketNormalizer.Replace(answer), "$1")
+	return daggerCitationRe.ReplaceAllString(answer, "[$1]")
+}
+
+// SourceRules guide answers in open chat, where each answer numbers its own sources.
+const SourceRules = `SOURCE RULES:
+1. Tool results give each source a "cite" value such as [3]. Every claim taken from a source MUST end with that exact marker; several sources are written [1][4].
+2. Never invent markers or cite a number no tool returned in this turn.
+3. Never say a document or web page says something its passage does not state.
+4. When you answer from your own knowledge, don't add markers. If the attached documents or the web don't cover the question, say so before adding what you know.
+5. Use a clear, friendly teaching tone, Markdown headings and bullet points where they help, and KaTeX ($...$ or $$...$$) for math.`
+
+// Matches [3], [3, 5] and [3; 5]; Unicode spaces are allowed as in citationRe.
+var numberedCitationRe = regexp.MustCompile(`\[[\s\p{Zs}]*(\d+(?:[\s\p{Zs}]*[,;][\s\p{Zs}]*\d+)*)[\s\p{Zs}]*\]`)
+
+// FilterSources keeps the numbered sources the answer actually cites.
+func FilterSources(answer string, sources []models.Citation) []models.Citation {
+	cited := make(map[int]bool)
+	for _, m := range numberedCitationRe.FindAllStringSubmatch(NormalizeCitations(answer), -1) {
+		for _, num := range digitsRe.FindAllString(m[1], -1) {
+			if n, err := strconv.Atoi(num); err == nil {
+				cited[n] = true
+			}
+		}
+	}
+	var kept []models.Citation
+	for _, s := range sources {
+		if cited[s.N] {
+			kept = append(kept, s)
+		}
+	}
+	return kept
 }
 
 // Matches [Page 3], [page 3], [Pages 3, 5] and [Pages 3 and 5]. Spaces may be Unicode ones like
