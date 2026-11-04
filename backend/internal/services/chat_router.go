@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"slices"
 	"strings"
 
@@ -92,6 +93,85 @@ Respond with JSON: {"intent": "...", "search_query": "...", "style": "", "topic"
 	r.QuestionTypes = slices.DeleteFunc(r.QuestionTypes, func(t string) bool { return !slices.Contains(questionTypes, t) })
 	r.Topic = rag.Snippet(strings.TrimSpace(r.Topic), 200)
 	return r, nil
+}
+
+// DirectResponder answers with one router call plus the matching service, without an agent loop.
+// It is the CHAT_ENGINE=direct fallback for the ADK coordinator.
+type DirectResponder struct {
+	llm       rag.LLMClient
+	ragEngine *rag.Engine
+	quiz      *QuizService
+	cards     *FlashcardService
+	summaries *SummaryService
+}
+
+func NewDirectResponder(llm rag.LLMClient, ragEngine *rag.Engine, quiz *QuizService, cards *FlashcardService, summaries *SummaryService) *DirectResponder {
+	return &DirectResponder{llm: llm, ragEngine: ragEngine, quiz: quiz, cards: cards, summaries: summaries}
+}
+
+func (d *DirectResponder) Respond(ctx context.Context, req ReplyRequest, streamWriter func(string) error) (*Reply, error) {
+	conv := req.Conversation
+	r, err := routeMessage(ctx, d.llm, req.History, req.Message)
+	if err != nil {
+		// Routing only adds intent detection and query rewriting; answering the message directly still works.
+		log.Printf("chat router failed, answering as a question: %v", err)
+		r = route{Intent: intentQuestion}
+	}
+
+	var reply *Reply
+	switch r.Intent {
+	case intentQuiz:
+		quiz, err := d.quiz.GenerateQuiz(ctx, req.UserID, GenerateQuizRequest{
+			DocumentID: conv.DocumentID, ConversationID: conv.ID, Topic: r.Topic,
+			Difficulty: r.Difficulty, NumQuestions: r.NumQuestions, QuestionTypes: r.QuestionTypes,
+		})
+		if err != nil {
+			return nil, err
+		}
+		reply = QuizReply(quiz, r.Topic)
+	case intentFlashcards:
+		set, err := d.cards.GenerateFlashcards(ctx, req.UserID, GenerateFlashcardsRequest{
+			DocumentID: conv.DocumentID, ConversationID: conv.ID, Topic: r.Topic, Count: r.Count,
+		})
+		if err != nil {
+			return nil, err
+		}
+		reply = FlashcardsReply(set, r.Topic)
+	case intentSummary:
+		sum, err := d.summaries.GenerateSummary(ctx, req.UserID, GenerateSummaryRequest{DocumentID: conv.DocumentID, Type: r.SummaryType, Topic: r.Topic})
+		if err != nil {
+			return nil, err
+		}
+		reply = SummaryReply(sum)
+	}
+	if reply != nil {
+		// Study items arrive all at once; send their text as a single token so the UI stays uniform.
+		if streamWriter != nil {
+			if err := streamWriter(reply.Content); err != nil {
+				return nil, err
+			}
+		}
+		return reply, nil
+	}
+
+	style := req.Style
+	if style == "" {
+		style = r.Style
+	}
+	params := rag.AskParams{
+		UserID: req.UserID, DocumentID: conv.DocumentID, Question: req.Message,
+		SearchQuery: r.SearchQuery, Style: style, History: req.History,
+	}
+	var result *rag.RAGResult
+	if streamWriter != nil {
+		result, err = d.ragEngine.StreamQuery(ctx, params, streamWriter)
+	} else {
+		result, err = d.ragEngine.Query(ctx, params)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("generating answer: %w", err)
+	}
+	return &Reply{Content: result.Answer, Type: "chat", Citations: result.Citations}, nil
 }
 
 func quoteKeys[V any](m map[string]V) string {

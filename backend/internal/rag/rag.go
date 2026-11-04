@@ -55,6 +55,24 @@ var ExplanationStyles = map[string]string{
 	"exam":         "Focus on what matters for an exam: key definitions, must-know points, common mistakes and likely questions.",
 }
 
+// GroundingRules are shared by every engine that answers from document excerpts.
+const GroundingRules = `STRICT GROUNDING RULES:
+1. Ground your answers in the document excerpts you were given.
+2. Every claim supported by the excerpts MUST cite its page in square brackets, exactly like [Page X].
+3. Never invent page numbers or references; cite only pages that appear in the excerpts.
+4. If the excerpts do not answer the question, say clearly that the document does not contain this information. You may then add general knowledge, clearly labeled as not from the document.
+5. Use an encouraging, clear teaching tone, Markdown headings and bullet points, and KaTeX ($...$ or $$...$$) for math.
+
+When explaining a concept, use this structure where it helps: a simple definition, the main idea, a step-by-step explanation, a real-world analogy, a practical example, key points to remember, and the page references.`
+
+// StyleRule returns the prompt line for a requested explanation style, or "" for the default.
+func StyleRule(style string) string {
+	if instruction, ok := ExplanationStyles[style]; ok {
+		return "\nREQUESTED EXPLANATION STYLE: " + instruction + "\n"
+	}
+	return ""
+}
+
 // Retrieve finds the chunks of one user's document most relevant to the query.
 func (e *Engine) Retrieve(ctx context.Context, query, userID, docID string, limit int) ([]vectorstore.SearchResult, error) {
 	queryVec, err := e.embedder.EmbedQuery(ctx, query)
@@ -114,25 +132,13 @@ func (e *Engine) BuildMessages(question, style string, chunks []vectorstore.Sear
 		fmt.Fprintf(&excerpts, "--- EXCERPT %d (Page %d, Document: %s) ---\n%s\n\n", i+1, c.PageNumber, c.DocumentName, c.ChunkText)
 	}
 
-	styleRule := ""
-	if instruction, ok := ExplanationStyles[style]; ok {
-		styleRule = "\nREQUESTED EXPLANATION STYLE: " + instruction + "\n"
-	}
-
 	systemPrompt := fmt.Sprintf(`You are PagePilot, an AI study companion and tutor.
 Help the student understand their uploaded PDF, grounded in the document.
 
-STRICT GROUNDING RULES:
-1. Ground your answers in the DOCUMENT EXCERPTS below.
-2. Every claim supported by the excerpts MUST cite its page in square brackets, exactly like [Page X].
-3. Never invent page numbers or references.
-4. If the excerpts do not answer the question, say clearly that the document does not contain this information. You may then add general knowledge, clearly labeled as not from the document.
-5. Use an encouraging, clear teaching tone, Markdown headings and bullet points, and KaTeX ($...$ or $$...$$) for math.
-
-When explaining a concept, use this structure where it helps: a simple definition, the main idea, a step-by-step explanation, a real-world analogy, a practical example, key points to remember, and the page references.
+%s
 %s
 DOCUMENT EXCERPTS:
-%s`, styleRule, excerpts.String())
+%s`, GroundingRules, StyleRule(style), excerpts.String())
 
 	messages := []ChatMessage{{Role: "system", Content: systemPrompt}}
 	// Up to 6 recent turns keep follow-ups in context without crowding out the excerpts.

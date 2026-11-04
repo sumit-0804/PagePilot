@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"time"
 	"unicode/utf8"
 
@@ -15,18 +14,15 @@ import (
 	"gorm.io/gorm"
 )
 
+// ChatService stores conversations and messages; a Responder produces each reply.
 type ChatService struct {
 	db        *gorm.DB
 	docs      *DocumentService
-	ragEngine *rag.Engine
-	llm       rag.LLMClient
-	quiz      *QuizService
-	cards     *FlashcardService
-	summaries *SummaryService
+	responder Responder
 }
 
-func NewChatService(db *gorm.DB, docs *DocumentService, ragEngine *rag.Engine, llm rag.LLMClient, quiz *QuizService, cards *FlashcardService, summaries *SummaryService) *ChatService {
-	return &ChatService{db: db, docs: docs, ragEngine: ragEngine, llm: llm, quiz: quiz, cards: cards, summaries: summaries}
+func NewChatService(db *gorm.DB, docs *DocumentService, responder Responder) *ChatService {
+	return &ChatService{db: db, docs: docs, responder: responder}
 }
 
 // CreateConversation starts a chat about one of the user's READY documents.
@@ -134,23 +130,17 @@ func (s *ChatService) SendMessage(ctx context.Context, userID, convID, content s
 		history = append(history, rag.ChatMessage{Role: m.Role, Content: m.Content})
 	}
 
-	r, err := routeMessage(ctx, s.llm, history, content)
-	if err != nil {
-		// Routing only adds intent detection and query rewriting; answering the message directly still works.
-		log.Printf("chat router failed, answering as a question: %v", err)
-		r = route{Intent: intentQuestion}
-	}
-	style := opts.Style
-	if style == "" {
-		style = r.Style
-	}
-
-	reply, err := s.reply(ctx, userID, conv, content, r, style, history, streamWriter)
+	reply, err := s.responder.Respond(ctx, ReplyRequest{
+		UserID: userID, Conversation: conv, Message: content, Style: opts.Style, History: history,
+	}, streamWriter)
 	if err != nil {
 		return nil, err
 	}
+	if reply.Citations == nil {
+		reply.Citations = []models.Citation{}
+	}
 
-	citationsJSON, err := json.Marshal(reply.citations)
+	citationsJSON, err := json.Marshal(reply.Citations)
 	if err != nil {
 		return nil, err
 	}
@@ -158,10 +148,10 @@ func (s *ChatService) SendMessage(ctx context.Context, userID, convID, content s
 		ID:             uuid.NewString(),
 		ConversationID: convID,
 		Role:           "assistant",
-		Content:        reply.content,
-		Type:           reply.msgType,
+		Content:        reply.Content,
+		Type:           reply.Type,
 		CitationsJSON:  string(citationsJSON),
-		MetadataJSON:   reply.metadata,
+		MetadataJSON:   reply.Metadata,
 		CreatedAt:      time.Now(),
 	}
 	if err := s.db.WithContext(ctx).Create(assistantMsg).Error; err != nil {
@@ -171,87 +161,7 @@ func (s *ChatService) SendMessage(ctx context.Context, userID, convID, content s
 		return nil, fmt.Errorf("updating conversation: %w", err)
 	}
 
-	return &SendMessageResult{UserMessage: userMsg, AssistantMessage: assistantMsg, Citations: reply.citations}, nil
-}
-
-type chatReply struct {
-	content   string
-	msgType   string // "chat", "quiz", "flashcards", "summary"
-	metadata  string // JSON linking the message to the quiz, flashcard set or summary
-	citations []models.Citation
-}
-
-func (s *ChatService) reply(ctx context.Context, userID string, conv *models.Conversation, content string, r route, style string, history []rag.ChatMessage, streamWriter func(string) error) (*chatReply, error) {
-	// Study items arrive all at once; stream their intro text as a single token so the UI stays uniform.
-	emit := func(text string) error {
-		if streamWriter == nil {
-			return nil
-		}
-		return streamWriter(text)
-	}
-
-	switch r.Intent {
-	case intentQuiz:
-		quiz, err := s.quiz.GenerateQuiz(ctx, userID, GenerateQuizRequest{
-			DocumentID: conv.DocumentID, ConversationID: conv.ID, Topic: r.Topic,
-			Difficulty: r.Difficulty, NumQuestions: r.NumQuestions, QuestionTypes: r.QuestionTypes,
-		})
-		if err != nil {
-			return nil, err
-		}
-		text := fmt.Sprintf("Let's test your understanding of %s. %d questions, one at a time, and you'll get feedback after each answer.",
-			subject(r.Topic), quiz.TotalQuestions)
-		return &chatReply{content: text, msgType: "quiz", metadata: metadataJSON("quiz_session_id", quiz.SessionID), citations: []models.Citation{}}, emit(text)
-
-	case intentFlashcards:
-		set, err := s.cards.GenerateFlashcards(ctx, userID, GenerateFlashcardsRequest{
-			DocumentID: conv.DocumentID, ConversationID: conv.ID, Topic: r.Topic, Count: r.Count,
-		})
-		if err != nil {
-			return nil, err
-		}
-		text := fmt.Sprintf("Here are %d flashcards on %s. Flip each card, then mark it Known or Need Practice.", len(set.Cards), subject(r.Topic))
-		return &chatReply{content: text, msgType: "flashcards", metadata: metadataJSON("flashcard_set_id", set.ID), citations: []models.Citation{}}, emit(text)
-
-	case intentSummary:
-		sum, err := s.summaries.GenerateSummary(ctx, userID, GenerateSummaryRequest{DocumentID: conv.DocumentID, Type: r.SummaryType, Topic: r.Topic})
-		if err != nil {
-			return nil, err
-		}
-		meta, err := json.Marshal(map[string]string{"summary_type": sum.Type, "topic": sum.Topic})
-		if err != nil {
-			return nil, err
-		}
-		return &chatReply{content: sum.Summary, msgType: "summary", metadata: string(meta), citations: sum.Citations}, emit(sum.Summary)
-	}
-
-	params := rag.AskParams{
-		UserID: userID, DocumentID: conv.DocumentID, Question: content,
-		SearchQuery: r.SearchQuery, Style: style, History: history,
-	}
-	var result *rag.RAGResult
-	var err error
-	if streamWriter != nil {
-		result, err = s.ragEngine.StreamQuery(ctx, params, streamWriter)
-	} else {
-		result, err = s.ragEngine.Query(ctx, params)
-	}
-	if err != nil {
-		return nil, fmt.Errorf("generating answer: %w", err)
-	}
-	return &chatReply{content: result.Answer, msgType: "chat", citations: result.Citations}, nil
-}
-
-func subject(topic string) string {
-	if topic == "" {
-		return "this document"
-	}
-	return topic
-}
-
-func metadataJSON(key, value string) string {
-	b, _ := json.Marshal(map[string]string{key: value}) // a map of strings always marshals
-	return string(b)
+	return &SendMessageResult{UserMessage: userMsg, AssistantMessage: assistantMsg, Citations: reply.Citations}, nil
 }
 
 func shortTitle(s string) string {

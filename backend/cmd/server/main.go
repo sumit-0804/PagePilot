@@ -61,11 +61,6 @@ func run() error {
 	}
 	log.Printf("Embeddings: %s (%d dims, limits %d RPM / %d TPM / %d RPD)", embedder.Model(), embedder.Dimension(), cfg.EmbeddingRPM, cfg.EmbeddingTPM, cfg.EmbeddingRPD)
 
-	// Phase D wires these agents into chat; for now they are only constructed.
-	if _, err := agents.InitAgentSystem(cfg); err != nil {
-		log.Printf("Warning: ADK agent system: %v", err)
-	}
-
 	vectors := vectorstore.NewPgVectorStore(db)
 	groq := rag.NewGroqClient(cfg)
 	engine := rag.NewEngine(embedder, vectors, groq)
@@ -75,7 +70,25 @@ func run() error {
 	flashcardService := services.NewFlashcardService(db, docService, engine, groq)
 	summaryService := services.NewSummaryService(db, docService, engine, groq)
 	progressService := services.NewProgressService(db, docService)
-	chatService := services.NewChatService(db, docService, engine, groq, quizService, flashcardService, summaryService)
+
+	var responder services.Responder
+	switch cfg.ChatEngine {
+	case "adk":
+		llm, err := agents.NewGroqModel(ctx, cfg.GroqAPIKey, cfg.GroqModel)
+		if err != nil {
+			return fmt.Errorf("creating ADK model: %w", err)
+		}
+		responder, err = agents.NewEngine(llm, agents.Services{
+			RAG: engine, Quiz: quizService, Cards: flashcardService, Summaries: summaryService, Progress: progressService,
+		})
+		if err != nil {
+			return err
+		}
+	case "direct":
+		responder = services.NewDirectResponder(groq, engine, quizService, flashcardService, summaryService)
+	}
+	log.Printf("Chat engine: %s (model %s)", cfg.ChatEngine, cfg.GroqModel)
+	chatService := services.NewChatService(db, docService, responder)
 
 	if err := docService.ResumeUnfinished(ctx); err != nil {
 		return err

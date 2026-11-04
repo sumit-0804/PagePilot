@@ -467,6 +467,19 @@ Start with a working end-to-end application, then introduce agent specialization
 
 Use ADK's actual supported orchestration and tool patterns. If some functionality is better handled by normal Go services, keep it in normal Go services rather than forcing every operation into an agent.
 
+### As implemented (ADK Go v2.7.0)
+
+- One coordinator `llmagent` (`study_tutor`) runs on Groq through ADK's `openaimodel` (Chat Completions API, `include_reasoning: false` for gpt-oss). It plays the Tutor role itself.
+- The other roles are ADK function tools (`functiontool`) that call the Go services:
+  - Retrieval: `search_document`, returning passages with a ready-made `[Page N]` citation.
+  - Quiz: `create_quiz`. Flashcard: `create_flashcards`. Summary: `summarize_document`.
+  - Study Progress: `get_study_progress`.
+- Separate sub-agents were not used: each would add an extra model round trip per message without adding capability, and the services already hold the logic.
+- Quiz, flashcard and summary tools set `SkipSummarization`, so the turn ends without a second model call to restate the result.
+- Each request runs in a short-lived in-memory ADK session rebuilt from the last 10 messages in Postgres, which stays the source of truth. A run is capped at 8 model calls.
+- Only pages returned by `search_document` in the current turn can be cited. Because earlier turns' passages aren't visible to the model, the agent searches again on every reply that uses the document, follow-ups included.
+- `CHAT_ENGINE=adk` (default) uses the agent. `CHAT_ENGINE=direct` uses a single router call plus the matching service, kept as a fallback.
+
 ---
 
 # 11. Database Design
@@ -657,6 +670,7 @@ Create a `.env.example` file containing placeholders for:
 - FRONTEND_URL (comma-separated list of allowed CORS origins)
 - GROQ_API_KEY
 - GROQ_MODEL
+- CHAT_ENGINE (adk or direct)
 - EMBEDDING_PROVIDER
 - EMBEDDING_MODEL
 - GEMINI_API_KEY

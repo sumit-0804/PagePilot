@@ -16,6 +16,8 @@ type Config struct {
 
 	GroqAPIKey string
 	GroqModel  string
+	// ChatEngine is "adk" (Google ADK coordinator agent with tools) or "direct" (single router call).
+	ChatEngine string
 
 	DatabaseURL string
 
@@ -66,6 +68,7 @@ func Load() (*Config, error) {
 		FrontendOrigins:    splitList(getEnv("FRONTEND_URL", "http://localhost:5173")),
 		GroqAPIKey:         getEnv("GROQ_API_KEY", ""),
 		GroqModel:          getEnv("GROQ_MODEL", "openai/gpt-oss-120b"),
+		ChatEngine:         strings.ToLower(getEnv("CHAT_ENGINE", "adk")),
 		DatabaseURL:        getEnv("DATABASE_URL", ""),
 		SupabaseURL:        strings.TrimRight(getEnv("SUPABASE_URL", ""), "/"),
 		SupabaseSecretKey:  getEnv("SUPABASE_SECRET_KEY", ""),
@@ -88,6 +91,9 @@ func Load() (*Config, error) {
 		"DATABASE_URL":        cfg.DatabaseURL,
 		"SUPABASE_URL":        cfg.SupabaseURL,
 		"SUPABASE_SECRET_KEY": cfg.SupabaseSecretKey,
+	}
+	if cfg.ChatEngine != "adk" && cfg.ChatEngine != "direct" {
+		errs = append(errs, fmt.Errorf("CHAT_ENGINE must be adk or direct, got %q", cfg.ChatEngine))
 	}
 	switch cfg.EmbeddingProvider {
 	case "gemini":

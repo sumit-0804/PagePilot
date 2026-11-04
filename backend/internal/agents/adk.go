@@ -2,147 +2,226 @@ package agents
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
+	"strings"
+	"sync"
 
-	"github.com/pagepilot/backend/internal/config"
+	"github.com/google/uuid"
+	"github.com/openai/openai-go/v3/option"
+	"github.com/pagepilot/backend/internal/rag"
+	"github.com/pagepilot/backend/internal/services"
+	"github.com/pagepilot/backend/internal/vectorstore"
 	"google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/agent/llmagent"
 	"google.golang.org/adk/v2/model"
 	"google.golang.org/adk/v2/model/openaimodel"
+	"google.golang.org/adk/v2/runner"
+	"google.golang.org/adk/v2/session"
+	"google.golang.org/genai"
 )
 
-// AgentSystem wraps the Google ADK Go multi-agent coordinator and sub-agents
-type AgentSystem struct {
-	Coordinator agent.Agent
-	Retrieval   agent.Agent
-	Tutor       agent.Agent
-	Quiz        agent.Agent
-	Flashcard   agent.Agent
-	Summary     agent.Agent
-	Progress    agent.Agent
+const (
+	appName   = "pagepilot"
+	agentName = "study_tutor"
+	// Bounds tool loops: a few searches, maybe one study tool, and the answer.
+	maxLLMCalls  = 8
+	historyTurns = 10
+)
+
+// Services are the Go services the agent's tools call; the agent decides when.
+type Services struct {
+	RAG       *rag.Engine
+	Quiz      *services.QuizService
+	Cards     *services.FlashcardService
+	Summaries *services.SummaryService
+	Progress  *services.ProgressService
 }
 
-// InitAgentSystem initializes Google ADK agents using Groq or fallback model
-func InitAgentSystem(cfg *config.Config) (*AgentSystem, error) {
-	ctx := context.Background()
+// NewGroqModel talks to Groq through ADK's OpenAI-compatible Chat Completions model.
+func NewGroqModel(ctx context.Context, apiKey, modelName string) (model.LLM, error) {
+	var opts []option.RequestOption
+	if strings.Contains(modelName, "gpt-oss") {
+		// The reasoning text is never shown, so don't have Groq send it.
+		opts = append(opts, option.WithJSONSet("include_reasoning", false))
+	}
+	return openaimodel.NewModel(ctx, modelName, &openaimodel.ClientConfig{
+		APIKey:  apiKey,
+		BaseURL: "https://api.groq.com/openai/v1",
+		API:     openaimodel.APIChatCompletions,
+		Options: opts,
+	})
+}
 
-	var llm model.LLM
-	var err error
+// Engine answers chat messages with an ADK coordinator agent whose tools wrap the study services.
+type Engine struct {
+	runner   *runner.Runner
+	sessions session.Service
+}
 
-	if cfg.GroqAPIKey != "" {
-		llm, err = openaimodel.NewModel(ctx, cfg.GroqModel, &openaimodel.ClientConfig{
-			APIKey:  cfg.GroqAPIKey,
-			BaseURL: "https://api.groq.com/openai/v1",
-			API:     openaimodel.APIChatCompletions,
-		})
+func NewEngine(llm model.LLM, svc Services) (*Engine, error) {
+	tools, err := newTools(svc)
+	if err != nil {
+		return nil, err
+	}
+	tutor, err := llmagent.New(llmagent.Config{
+		Name:                  agentName,
+		Description:           "Study tutor for one uploaded PDF: answers from the document, and creates quizzes, flashcards and summaries.",
+		Model:                 llm,
+		InstructionProvider:   instruction,
+		GenerateContentConfig: &genai.GenerateContentConfig{Temperature: genai.Ptr[float32](0.2)},
+		Tools:                 tools,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("creating tutor agent: %w", err)
+	}
+	// Postgres holds the conversation; each request gets a short-lived ADK session rebuilt from it.
+	sessions := session.InMemoryService()
+	r, err := runner.New(runner.Config{AppName: appName, Agent: tutor, SessionService: sessions})
+	if err != nil {
+		return nil, fmt.Errorf("creating runner: %w", err)
+	}
+	return &Engine{runner: r, sessions: sessions}, nil
+}
+
+// turn is what one chat request's tools need (whose document) and collect (pages, study items).
+type turn struct {
+	userID         string
+	documentID     string
+	conversationID string
+	style          string
+
+	mu        sync.Mutex
+	retrieved []vectorstore.SearchResult
+	studyItem *services.Reply
+}
+
+type turnKey struct{}
+
+func turnFrom(ctx context.Context) (*turn, error) {
+	t, ok := ctx.Value(turnKey{}).(*turn)
+	if !ok {
+		return nil, errors.New("no chat request in context")
+	}
+	return t, nil
+}
+
+func (t *turn) addRetrieved(results []vectorstore.SearchResult) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.retrieved = append(t.retrieved, results...)
+}
+
+func (t *turn) setStudyItem(r *services.Reply) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.studyItem = r
+}
+
+func (e *Engine) Respond(ctx context.Context, req services.ReplyRequest, streamWriter func(string) error) (*services.Reply, error) {
+	t := &turn{userID: req.UserID, documentID: req.Conversation.DocumentID, conversationID: req.Conversation.ID, style: req.Style}
+	ctx = context.WithValue(ctx, turnKey{}, t)
+
+	sessionID := uuid.NewString()
+	created, err := e.sessions.Create(ctx, &session.CreateRequest{AppName: appName, UserID: req.UserID, SessionID: sessionID})
+	if err != nil {
+		return nil, fmt.Errorf("creating agent session: %w", err)
+	}
+	defer func() {
+		if err := e.sessions.Delete(context.WithoutCancel(ctx), &session.DeleteRequest{AppName: appName, UserID: req.UserID, SessionID: sessionID}); err != nil {
+			log.Printf("deleting agent session: %v", err)
+		}
+	}()
+	if err := e.loadHistory(ctx, created.Session, req.History); err != nil {
+		return nil, err
+	}
+
+	var final string
+	msg := genai.NewContentFromText(req.Message, genai.RoleUser)
+	runCfg := agent.RunConfig{StreamingMode: agent.StreamingModeSSE, MaxLLMCalls: maxLLMCalls}
+	for ev, err := range e.runner.Run(ctx, req.UserID, sessionID, msg, runCfg) {
 		if err != nil {
-			log.Printf("Warning: Failed to initialize Google ADK openaimodel with Groq: %v. Using standard fallback.", err)
+			return nil, fmt.Errorf("tutor agent failed: %w", err)
+		}
+		if ev.ErrorCode != "" || ev.ErrorMessage != "" {
+			return nil, fmt.Errorf("model error %s: %s", ev.ErrorCode, ev.ErrorMessage)
+		}
+		text := textOf(ev.Content)
+		if ev.Partial {
+			if text != "" && streamWriter != nil {
+				if err := streamWriter(text); err != nil {
+					return nil, err
+				}
+			}
+			continue
+		}
+		if ev.Author == agentName && ev.IsFinalResponse() && text != "" {
+			final = text
+		}
+	}
+
+	if t.studyItem != nil {
+		if streamWriter != nil {
+			if err := streamWriter(t.studyItem.Content); err != nil {
+				return nil, err
+			}
+		}
+		return t.studyItem, nil
+	}
+	if strings.TrimSpace(final) == "" {
+		return nil, errors.New("the tutor didn't produce an answer, please try again")
+	}
+	answer := rag.NormalizeCitations(final)
+	return &services.Reply{Content: answer, Type: "chat", Citations: rag.FilterCitations(answer, rag.CitationsFor(t.retrieved))}, nil
+}
+
+// loadHistory replays recent chat turns from Postgres into the request's ADK session.
+func (e *Engine) loadHistory(ctx context.Context, s session.Session, history []rag.ChatMessage) error {
+	for _, m := range history[max(0, len(history)-historyTurns):] {
+		ev := session.NewEvent(ctx, "history")
+		if m.Role == "user" {
+			ev.Author = "user"
+			ev.Content = genai.NewContentFromText(m.Content, genai.RoleUser)
 		} else {
-			log.Printf("Google ADK Go initialized with model: %s (via Groq OpenAI-compatible endpoint)", cfg.GroqModel)
+			ev.Author = agentName
+			ev.Content = genai.NewContentFromText(m.Content, genai.RoleModel)
+		}
+		if err := e.sessions.AppendEvent(ctx, s, ev); err != nil {
+			return fmt.Errorf("loading chat history: %w", err)
 		}
 	}
+	return nil
+}
 
-	// 1. Retrieval Agent
-	retrievalAgent, err := llmagent.New(llmagent.Config{
-		Name:        "retrieval_agent",
-		Description: "Retrieves relevant document chunks and page citations from the vector database.",
-		Instruction: "You are the Retrieval Agent. Your job is to extract exact passages, facts, and page numbers from uploaded documents.",
-		Model:       llm,
-	})
-	if err != nil {
-		log.Printf("Retrieval agent init warning: %v", err)
+// textOf joins an event's visible text, skipping reasoning ("thought") parts.
+func textOf(c *genai.Content) string {
+	if c == nil {
+		return ""
 	}
-
-	// 2. Tutor Agent
-	tutorAgent, err := llmagent.New(llmagent.Config{
-		Name:        "tutor_agent",
-		Description: "Explains difficult concepts, answers student questions with clear pedagogical steps, and adapts explanation depth.",
-		Instruction: "You are the Tutor Agent. Explain concepts clearly, with beginner-friendly analogies, bullet points, and step-by-step reasoning grounded in PDF citations.",
-		Model:       llm,
-	})
-	if err != nil {
-		log.Printf("Tutor agent init warning: %v", err)
-	}
-
-	// 3. Quiz Agent
-	quizAgent, err := llmagent.New(llmagent.Config{
-		Name:        "quiz_agent",
-		Description: "Generates multiple-choice quiz questions grounded in the PDF and provides immediate answer feedback.",
-		Instruction: "You are the Quiz Agent. You formulate thought-provoking questions, validate student choices, and explain why answers are right or wrong with page citations.",
-		Model:       llm,
-	})
-	if err != nil {
-		log.Printf("Quiz agent init warning: %v", err)
-	}
-
-	// 4. Flashcard Agent
-	flashcardAgent, err := llmagent.New(llmagent.Config{
-		Name:        "flashcard_agent",
-		Description: "Creates high-yield study flashcards with front (prompt/concept) and back (answer/key takeaway).",
-		Instruction: "You are the Flashcard Agent. Synthesize dense document topics into active recall flashcards.",
-		Model:       llm,
-	})
-	if err != nil {
-		log.Printf("Flashcard agent init warning: %v", err)
-	}
-
-	// 5. Summary Agent
-	summaryAgent, err := llmagent.New(llmagent.Config{
-		Name:        "summary_agent",
-		Description: "Produces chapter-wise or full-document structured summaries, revision cheat sheets, and formula lists.",
-		Instruction: "You are the Summary Agent. Structure summaries with Executive Summary, Core Concepts, Key Terms, and Page References.",
-		Model:       llm,
-	})
-	if err != nil {
-		log.Printf("Summary agent init warning: %v", err)
-	}
-
-	// 6. Study Progress Agent
-	progressAgent, err := llmagent.New(llmagent.Config{
-		Name:        "progress_agent",
-		Description: "Analyzes quiz scores, tracks flashcard mastery, identifies weak topics, and recommends next study activities.",
-		Instruction: "You are the Study Progress Agent. Track learning velocity and identify knowledge gaps to recommend revision topics.",
-		Model:       llm,
-	})
-	if err != nil {
-		log.Printf("Progress agent init warning: %v", err)
-	}
-
-	// Build sub-agents list
-	var subAgents []agent.Agent
-	for _, a := range []agent.Agent{retrievalAgent, tutorAgent, quizAgent, flashcardAgent, summaryAgent, progressAgent} {
-		if a != nil {
-			subAgents = append(subAgents, a)
+	var b strings.Builder
+	for _, p := range c.Parts {
+		if p != nil && p.Text != "" && !p.Thought {
+			b.WriteString(p.Text)
 		}
 	}
+	return b.String()
+}
 
-	// 7. Coordinator Agent (Root)
-	coordinator, err := llmagent.New(llmagent.Config{
-		Name:        "coordinator_agent",
-		Description: "Root orchestrator that understands user intent and routes tasks to the appropriate specialized study agent.",
-		Instruction: `You are the Coordinator Agent for PagePilot.
-Analyze user messages to detect intent:
-- Concept questions, explanations, follow-ups -> Delegate to tutor_agent
-- Quiz requests, tests, knowledge checks -> Delegate to quiz_agent
-- Flashcard generation -> Delegate to flashcard_agent
-- Summaries, chapter notes, cheat sheets -> Delegate to summary_agent
-- Study progress, analytics, weak areas -> Delegate to progress_agent
-Ensure all outputs remain grounded in document context.`,
-		Model:     llm,
-		SubAgents: subAgents,
-	})
+func instruction(ctx agent.ReadonlyContext) (string, error) {
+	t, err := turnFrom(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create coordinator agent: %w", err)
+		return "", err
 	}
+	return `You are PagePilot, a study tutor for one PDF the student uploaded.
 
-	return &AgentSystem{
-		Coordinator: coordinator,
-		Retrieval:   retrievalAgent,
-		Tutor:       tutorAgent,
-		Quiz:        quizAgent,
-		Flashcard:   flashcardAgent,
-		Summary:     summaryAgent,
-		Progress:    progressAgent,
-	}, nil
+TOOLS:
+- search_document: finds passages in the PDF. You only see the chat text of earlier turns, never their passages, so call search_document in THIS turn before every reply that uses the document, including follow-ups such as "explain it more simply", "give another example" or "go deeper". Pass a standalone query that names the subject (use the conversation to resolve "it" or "that"). If the passages don't cover the question, search again with different words. Cite each passage with its "cite" value, exactly as given.
+- create_quiz: when the student wants to be quizzed or tested ("test my understanding", "quiz me").
+- create_flashcards: when the student wants flashcards.
+- summarize_document: when the student wants a summary, notes, revision notes, definitions, key concepts, formulas or exam notes for the document.
+- get_study_progress: when the student asks how they are doing, what to review, or what their weak areas are. Explain the result in plain words.
+For a quiz, flashcards or a summary, take the topic from the message or the conversation; leave it empty for the whole document.
+
+` + rag.GroundingRules + "\n" + rag.StyleRule(t.style), nil
 }

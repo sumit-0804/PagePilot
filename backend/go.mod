@@ -10,6 +10,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/joho/godotenv v1.5.1
 	github.com/ledongthuc/pdf v0.0.0-20261020125853-5e46805f718e
+	github.com/openai/openai-go/v3 v3.82.0
 	github.com/pgvector/pgvector-go v0.4.1
 	github.com/supabase-community/storage-go v0.8.1
 	golang.org/x/time v0.16.0
@@ -42,7 +43,6 @@ require (
 	github.com/jackc/puddle/v2 v2.2.2 // indirect
 	github.com/jinzhu/inflection v1.0.0 // indirect
 	github.com/jinzhu/now v1.1.5 // indirect
-	github.com/openai/openai-go/v3 v3.82.0 // indirect
 	github.com/tidwall/gjson v1.19.0 // indirect
 	github.com/tidwall/match v1.2.0 // indirect
 	github.com/tidwall/pretty v1.2.1 // indirect
