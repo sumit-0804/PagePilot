@@ -73,7 +73,7 @@ func Load() (*Config, error) {
 	}
 
 	cfg := &Config{
-		APIPort:            getEnv("API_PORT", "8080"),
+		APIPort:            getEnv("PORT", getEnv("API_PORT", "8080")), // hosts like Render set PORT
 		FrontendOrigins:    splitList(getEnv("FRONTEND_URL", "http://localhost:5173")),
 		GroqAPIKey:         getEnv("GROQ_API_KEY", ""),
 		GroqModel:          getEnv("GROQ_MODEL", "openai/gpt-oss-120b"),
