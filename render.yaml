@@ -1,0 +1,64 @@
+# Render Blueprint for the PagePilot API. Secrets use sync: false, so Render asks for them on first deploy.
+services:
+  - type: web
+    name: pagepilot-api
+    runtime: docker
+    plan: free
+    region: singapore # closest to the Supabase database in ap-south-1
+    dockerContext: ./backend
+    dockerfilePath: ./backend/Dockerfile
+    healthCheckPath: /health
+    autoDeployTrigger: commit
+    buildFilter:
+      paths:
+        - backend/**
+    domains:
+      - api.pagepilot.sumit0804.space
+    envVars:
+      - key: FRONTEND_URL
+        value: https://pagepilot.sumit0804.space
+      - key: DATABASE_URL # Supabase session pooler connection string
+        sync: false
+      - key: SUPABASE_URL
+        value: https://wfwdsqpqkaljvflagkfu.supabase.co
+      - key: SUPABASE_SECRET_KEY
+        sync: false
+      - key: STORAGE_BUCKET
+        value: pdfs
+      - key: GROQ_API_KEY
+        sync: false
+      - key: GROQ_MODEL
+        value: openai/gpt-oss-120b
+      - key: CHAT_ENGINE
+        value: adk
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: EMBEDDING_PROVIDER
+        value: gemini
+      - key: EMBEDDING_MODEL
+        value: gemini-embedding-2
+      - key: EMBEDDING_DIM
+        value: "1536"
+      - key: EMBEDDING_BATCH_SIZE
+        value: "100"
+      # Rate limits: copy the numbers from your AI Studio rate-limit page.
+      - key: EMBEDDING_RPM
+        value: "100"
+      - key: EMBEDDING_TPM
+        value: "30000"
+      - key: EMBEDDING_RPD
+        value: "1000"
+      - key: OCR_PROVIDER
+        value: gemini
+      - key: OCR_MODEL
+        value: gemini-3.5-flash-lite
+      - key: OCR_RPM
+        sync: false
+      - key: OCR_TPM
+        sync: false
+      - key: OCR_RPD
+        sync: false
+      - key: OCR_PAGES_PER_CALL
+        value: "10"
+      - key: OCR_MAX_PAGES
+        value: "100"
