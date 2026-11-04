@@ -473,19 +473,19 @@ func (a *API) fail(w http.ResponseWriter, err error) {
 	}
 }
 
-// publicMessage keeps user-facing messages useful without dumping upstream response bodies.
+// publicMessage shows errors written for users; anything else (e.g. a provider rejecting a key) is
+// already logged, so the user gets a short message instead of upstream details.
 func publicMessage(err error) string {
 	switch {
 	case errors.Is(err, services.ErrNotFound):
 		return "not found"
-	case errors.Is(err, embeddings.ErrDailyQuota):
+	case errors.Is(err, services.ErrInvalidInput), errors.Is(err, services.ErrNotReady),
+		errors.Is(err, services.ErrAlreadyAnswered), errors.Is(err, services.ErrNotPDF),
+		errors.Is(err, services.ErrEmptyFile), errors.Is(err, services.ErrTooLarge),
+		errors.Is(err, embeddings.ErrDailyQuota):
 		return err.Error()
 	}
-	msg := err.Error()
-	if i := strings.Index(msg, ": "); i > 0 && len(msg) > 200 {
-		return msg[:i]
-	}
-	return msg
+	return "Something went wrong on the server. Try again in a moment; if it keeps happening, check the API logs."
 }
 
 func decodeJSON(w http.ResponseWriter, r *http.Request, v any) bool {

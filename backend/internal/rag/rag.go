@@ -60,10 +60,12 @@ const GroundingRules = `STRICT GROUNDING RULES:
 1. Ground your answers in the document excerpts you were given.
 2. Every claim supported by the excerpts MUST cite its page in square brackets, exactly like [Page X].
 3. Never invent page numbers or references; cite only pages that appear in the excerpts.
-4. If the excerpts do not answer the question, say clearly that the document does not contain this information. You may then add general knowledge, clearly labeled as not from the document.
-5. Use an encouraging, clear teaching tone, Markdown headings and bullet points, and KaTeX ($...$ or $$...$$) for math.
+4. Never say or imply that the document contains something the excerpts do not state (no "as the textbook describes" for facts that are not in the excerpts).
+5. Anything you add that the excerpts do not state (extra steps, terms, names, examples, analogies) goes in a separate final section headed "Beyond your document", without page citations.
+6. If the excerpts do not answer the question, say clearly that the document does not contain this information; you may then add general knowledge under "Beyond your document".
+7. Use an encouraging, clear teaching tone, Markdown headings and bullet points, and KaTeX ($...$ or $$...$$) for math.
 
-When explaining a concept, use this structure where it helps: a simple definition, the main idea, a step-by-step explanation, a real-world analogy, a practical example, key points to remember, and the page references.`
+When explaining a concept, use this structure where it helps: a simple definition, the main idea, a step-by-step explanation, a real-world analogy, a practical example, key points to remember, and the page references. Build each part from the excerpts; an analogy or example you make up yourself is general knowledge, so mark it as your own (for example "An analogy:") rather than attributing it to the document.`
 
 // StyleRule returns the prompt line for a requested explanation style, or "" for the default.
 func StyleRule(style string) string {
@@ -180,8 +182,11 @@ func Snippet(s string, n int) string {
 // Some models (e.g. gpt-oss) write 【Page 2】 instead of [Page 2].
 var bracketNormalizer = strings.NewReplacer("【", "[", "】", "]", "［", "[", "］", "]")
 
+// A model given a ready-made "[Page 5]" label sometimes wraps it again as "[[Page 5]]".
+var doubledCitationRe = regexp.MustCompile(`(?i)\[[\s\p{Zs}]*(\[[\s\p{Zs}]*pages?[^\[\]]*\])[\s\p{Zs}]*\]`)
+
 func NormalizeCitations(answer string) string {
-	return bracketNormalizer.Replace(answer)
+	return doubledCitationRe.ReplaceAllString(bracketNormalizer.Replace(answer), "$1")
 }
 
 // Matches [Page 3], [page 3], [Pages 3, 5] and [Pages 3 and 5]. Spaces may be Unicode ones like

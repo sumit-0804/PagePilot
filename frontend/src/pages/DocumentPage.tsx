@@ -99,6 +99,14 @@ export default function DocumentPage() {
           <p className="mt-2 text-muted-foreground">
             {doc.page_count ? `${doc.page_count} pages, uploaded ${timeAgo(doc.created_at)}` : `Uploaded ${timeAgo(doc.created_at)}`}
           </p>
+          {ready && doc.ocr_pages > 0 && (
+            <p className="mt-3 max-w-lg text-sm text-muted-foreground">
+              {doc.ocr_pages === doc.page_count
+                ? 'This PDF is scanned, so its text was read with OCR.'
+                : `${doc.ocr_pages} of ${doc.page_count} pages are scanned, so their text was read with OCR.`}{' '}
+              Check exact wording and numbers against the page.
+            </p>
+          )}
 
           {isProcessing(doc.status) && (
             <div className="mt-8 max-w-md" role="status">

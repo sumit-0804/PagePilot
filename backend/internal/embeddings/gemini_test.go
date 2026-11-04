@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"golang.org/x/time/rate"
+	"github.com/pagepilot/backend/internal/gemini"
 	"google.golang.org/genai"
 )
 
@@ -19,10 +19,111 @@ func fakeVectors(n, dim int) [][]float32 {
 	return out
 }
 
+// fakeClock lets limiter waits happen instantly while still moving time forward.
+type fakeClock struct {
+	now   time.Time
+	slept time.Duration
+}
+
+func (c *fakeClock) Now() time.Time { return c.now }
+
+func (c *fakeClock) Sleep(_ context.Context, d time.Duration) error {
+	c.now = c.now.Add(d)
+	c.slept += d
+	return nil
+}
+
 func newTestEmbedder(call embedCall, rpm, tpm, rpd int) *GeminiEmbedder {
-	g := newGeminiEmbedder(GeminiConfig{Model: "test", Dimension: 4}, call, NewLimiter(rpm, tpm, rpd))
-	g.sleep = func(context.Context, time.Duration) error { return nil }
+	g, _ := newTestEmbedderWithClock(call, rpm, tpm, rpd)
 	return g
+}
+
+func newTestEmbedderWithClock(call embedCall, rpm, tpm, rpd int) (*GeminiEmbedder, *fakeClock) {
+	clock := &fakeClock{now: time.Date(2026, 11, 4, 10, 0, 0, 0, time.UTC)}
+	limiter := gemini.NewLimiter(rpm, tpm, rpd)
+	limiter.SetClock(clock.Now, clock.Sleep)
+	g := newGeminiEmbedder(GeminiConfig{Model: "test", Dimension: 4}, call, limiter)
+	g.sleep = func(context.Context, time.Duration) error { return nil }
+	return g, clock
+}
+
+func countingCall(sizes *[]int) embedCall {
+	return func(_ context.Context, texts []string, _ string) ([][]float32, error) {
+		*sizes = append(*sizes, len(texts))
+		return fakeVectors(len(texts), 4), nil
+	}
+}
+
+func manyTexts(n int) []string {
+	out := make([]string, n)
+	for i := range out {
+		out[i] = "short passage"
+	}
+	return out
+}
+
+func TestEachTextCountsTowardRequestsPerMinute(t *testing.T) {
+	var sizes []int
+	g, clock := newTestEmbedderWithClock(countingCall(&sizes), 100, 1_000_000, 10_000)
+
+	if _, err := g.EmbedDocuments(context.Background(), manyTexts(100)); err != nil {
+		t.Fatal(err)
+	}
+	if clock.slept != 0 {
+		t.Fatalf("the first full batch should go straight through, waited %s", clock.slept)
+	}
+	if _, err := g.EmbedDocuments(context.Background(), manyTexts(52)); err != nil {
+		t.Fatal(err)
+	}
+	// 100 texts used the whole minute, so the next 52 must wait for that minute to pass.
+	if clock.slept < 59*time.Second || clock.slept > 61*time.Second {
+		t.Fatalf("expected about a minute of waiting, got %s", clock.slept)
+	}
+}
+
+func TestSendsWhatFitsInsteadOfWaitingForTheWholeBatch(t *testing.T) {
+	var sizes []int
+	g, clock := newTestEmbedderWithClock(countingCall(&sizes), 100, 1_000_000, 10_000)
+	if _, err := g.EmbedQuery(context.Background(), "startup check"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.EmbedDocuments(context.Background(), manyTexts(100)); err != nil {
+		t.Fatal(err)
+	}
+	if len(sizes) != 3 || sizes[1] != 99 || sizes[2] != 1 {
+		t.Fatalf("expected 99 texts at once, then 1 when the window frees up; got calls %v", sizes)
+	}
+	if clock.slept > 61*time.Second {
+		t.Fatalf("waited longer than one window: %s", clock.slept)
+	}
+}
+
+func TestBatchLargerThanRequestsPerMinuteIsSplit(t *testing.T) {
+	var sizes []int
+	g := newTestEmbedder(countingCall(&sizes), 10, 1_000_000, 10_000)
+	vecs, err := g.EmbedDocuments(context.Background(), manyTexts(25))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(vecs) != 25 {
+		t.Fatalf("expected 25 vectors, got %d", len(vecs))
+	}
+	for _, s := range sizes {
+		if s > 10 {
+			t.Fatalf("no call may carry more texts than the per-minute limit, got sizes %v", sizes)
+		}
+	}
+}
+
+func TestDailyQuotaIsChargedPerText(t *testing.T) {
+	var sizes []int
+	g := newTestEmbedder(countingCall(&sizes), 1000, 1_000_000, 150)
+	if _, err := g.EmbedDocuments(context.Background(), manyTexts(100)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.EmbedDocuments(context.Background(), manyTexts(100)); !errors.Is(err, ErrDailyQuota) {
+		t.Fatalf("100 + 100 texts exceed a 150-per-day quota, expected ErrDailyQuota, got %v", err)
+	}
 }
 
 func TestDailyQuotaStopsRequests(t *testing.T) {
@@ -49,8 +150,12 @@ func TestDailyQuotaResetsNextPacificDay(t *testing.T) {
 	g := newTestEmbedder(func(_ context.Context, texts []string, _ string) ([][]float32, error) {
 		return fakeVectors(len(texts), 4), nil
 	}, 6000, 100000, 1)
-	now := time.Date(2026, 11, 3, 23, 0, 0, 0, g.limiter.pacific)
-	g.limiter.now = func() time.Time { return now }
+	pacific, err := time.LoadLocation("America/Los_Angeles")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 11, 3, 23, 0, 0, 0, pacific)
+	g.limiter.SetClock(func() time.Time { return now }, gemini.SleepCtx)
 
 	if _, err := g.EmbedQuery(context.Background(), "a"); err != nil {
 		t.Fatal(err)
@@ -103,7 +208,6 @@ func TestOversizedBatchIsSplit(t *testing.T) {
 		batchSizes = append(batchSizes, len(texts))
 		return fakeVectors(len(texts), 4), nil
 	}, 6000, 60, 100)
-	g.limiter.tpm.SetLimit(rate.Inf) // keep the 60-token burst that forces the split, without real waiting
 
 	texts := []string{strings.Repeat("a", 100), strings.Repeat("b", 100), strings.Repeat("c", 100)} // ~26 tokens each
 	vecs, err := g.EmbedDocuments(context.Background(), texts)

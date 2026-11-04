@@ -136,7 +136,7 @@ RULES:
 3. "true_false": options must be ["True", "False"]; correct_option is 0 for True, 1 for False.
 4. "short_answer": options is []; correct_option is null; reference_answer is a concise model answer from the excerpts.
 5. citation_page must be the page number shown in the excerpt that contains the answer.
-6. explanation says why the answer is right (and, for mcq, why the other options are wrong).
+6. explanation says why the answer is right (and, for mcq, why the other options are wrong). Refer to options by their wording, never by number or letter.
 7. Output MUST be a JSON object matching this schema:
 {
   "questions": [

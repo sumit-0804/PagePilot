@@ -208,8 +208,11 @@
   .reading hr {
     border-color: var(--border);
   }
+  /* Wide tables scroll inside themselves instead of pushing the whole chat sideways. */
   .reading table {
-    width: 100%;
+    display: block;
+    max-width: 100%;
+    overflow-x: auto;
     border-collapse: collapse;
     font-size: 0.92em;
   }

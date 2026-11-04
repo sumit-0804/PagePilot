@@ -68,4 +68,7 @@ func TestBuildMessagesAndFilterCitations(t *testing.T) {
 	if got := NormalizeCitations("x 【Page 5】"); got != "x [Page 5]" {
 		t.Errorf("normalizeCitations: got %q", got)
 	}
+	if got := NormalizeCitations("Founded 1987 [[Page 137]] and [ [Pages 3, 5] ]."); got != "Founded 1987 [Page 137] and [Pages 3, 5]." {
+		t.Errorf("doubled brackets should collapse: got %q", got)
+	}
 }

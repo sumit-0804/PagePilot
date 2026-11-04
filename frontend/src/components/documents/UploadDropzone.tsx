@@ -69,7 +69,7 @@ export function UploadDropzone({ onUploaded, compact = false }: { onUploaded: (d
           <>
             <FileUp className="size-6 text-muted-foreground" />
             <p className="mt-3 font-semibold">Drop a PDF here</p>
-            <p className="mt-1 text-sm text-muted-foreground">Up to 50 MB. Scanned PDFs need a text layer.</p>
+            <p className="mt-1 text-sm text-muted-foreground">Up to 50 MB. Scanned pages are read with OCR.</p>
             <Button className="mt-4" variant="outline" onClick={() => inputRef.current?.click()}>
               Choose a file
             </Button>

@@ -16,6 +16,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/pagepilot/backend/internal/embeddings"
 	"github.com/pagepilot/backend/internal/models"
+	"github.com/pagepilot/backend/internal/ocr"
 	"github.com/pagepilot/backend/internal/pdf"
 	"github.com/pagepilot/backend/internal/storage"
 	"github.com/pagepilot/backend/internal/vectorstore"
@@ -28,19 +29,25 @@ const MaxUploadBytes = 50 << 20
 var (
 	ErrNotFound     = errors.New("not found")
 	ErrInvalidInput = errors.New("invalid input")
-	ErrNotPDF       = errors.New("file is not a PDF")
-	ErrEmptyFile    = errors.New("file is empty")
-	ErrTooLarge     = fmt.Errorf("file is larger than %d MB", MaxUploadBytes>>20)
-	ErrNotReady     = errors.New("document is not ready yet")
-	pdfMagicBytes   = []byte("%PDF-")
+	// Shown to users as-is, so they read as sentences.
+	ErrNotPDF     = errors.New("This file isn't a PDF. Choose a .pdf file.")
+	ErrEmptyFile  = errors.New("This file is empty.")
+	ErrTooLarge   = fmt.Errorf("This PDF is larger than %d MB.", MaxUploadBytes>>20)
+	ErrNotReady   = errors.New("document is not ready yet")
+	pdfMagicBytes = []byte("%PDF-")
 )
 
+// A page with less text than this is treated as scanned and read with OCR (when OCR is on).
+const minPageTextChars = 40
+
 type DocumentService struct {
-	db        *gorm.DB
-	files     storage.FileStore
-	embedder  embeddings.Embedder
-	vectors   vectorstore.VectorStore
-	batchSize int
+	db          *gorm.DB
+	files       storage.FileStore
+	embedder    embeddings.Embedder
+	vectors     vectorstore.VectorStore
+	batchSize   int
+	ocr         ocr.Recognizer // nil when OCR is off
+	ocrMaxPages int
 }
 
 func NewDocumentService(db *gorm.DB, files storage.FileStore, embedder embeddings.Embedder, vectors vectorstore.VectorStore, batchSize int) *DocumentService {
@@ -48,6 +55,11 @@ func NewDocumentService(db *gorm.DB, files storage.FileStore, embedder embedding
 		batchSize = 100
 	}
 	return &DocumentService{db: db, files: files, embedder: embedder, vectors: vectors, batchSize: batchSize}
+}
+
+// UseOCR turns on reading scanned pages, up to maxPages per document.
+func (s *DocumentService) UseOCR(r ocr.Recognizer, maxPages int) {
+	s.ocr, s.ocrMaxPages = r, maxPages
 }
 
 // Upload validates and stores a PDF, then processes it in the background.
@@ -129,31 +141,71 @@ func (s *DocumentService) process(docID string) {
 	}
 	if err := s.runPipeline(ctx, &doc); err != nil {
 		log.Printf("[Doc %s] processing failed: %v", docID, err)
-		if uerr := s.update(ctx, docID, map[string]any{"status": models.StatusFailed, "error_message": err.Error()}); uerr != nil {
+		if uerr := s.update(ctx, docID, map[string]any{"status": models.StatusFailed, "error_message": failureMessage(err)}); uerr != nil {
 			log.Printf("[Doc %s] recording failure: %v", docID, uerr)
 		}
 	}
 }
 
+// processingError carries the sentence shown to the user; the wrapped cause goes only to the log.
+type processingError struct {
+	message string
+	cause   error
+}
+
+func (e *processingError) Error() string { return e.message + ": " + e.cause.Error() }
+func (e *processingError) Unwrap() error { return e.cause }
+
+func failWith(message string, cause error) error {
+	return &processingError{message: message, cause: cause}
+}
+
+func failureMessage(err error) string {
+	if errors.Is(err, embeddings.ErrDailyQuota) {
+		return "The daily limit for indexing documents has been reached. Upload this PDF again after the limit resets at midnight Pacific time."
+	}
+	if errors.Is(err, ocr.ErrDailyQuota) {
+		return "The daily limit for reading scanned pages has been reached. Upload this PDF again after the limit resets at midnight Pacific time."
+	}
+	var pe *processingError
+	if errors.As(err, &pe) {
+		return pe.message
+	}
+	return "Something went wrong while processing this PDF. Try uploading it again."
+}
+
 func (s *DocumentService) runPipeline(ctx context.Context, doc *models.Document) error {
-	if err := s.update(ctx, doc.ID, map[string]any{"status": models.StatusExtracting, "error_message": "", "chunks_embedded": 0}); err != nil {
+	if err := s.update(ctx, doc.ID, map[string]any{"status": models.StatusExtracting, "error_message": "", "chunks_embedded": 0, "ocr_pages": 0}); err != nil {
 		return err
 	}
 	data, err := s.files.Read(ctx, doc.StoragePath)
 	if err != nil {
 		return fmt.Errorf("reading stored PDF: %w", err)
 	}
+	started := time.Now()
 	extraction, err := extractPDF(data)
 	if err != nil {
-		return fmt.Errorf("could not read this PDF (it may be corrupted or encrypted): %w", err)
+		return failWith("This PDF couldn't be read. It may be damaged or password-protected.", err)
 	}
-	if err := s.update(ctx, doc.ID, map[string]any{"page_count": extraction.TotalPages, "status": models.StatusChunking}); err != nil {
+	log.Printf("[Doc %s] extracted %d pages in %s", doc.ID, extraction.TotalPages, time.Since(started).Round(time.Millisecond))
+	if err := s.update(ctx, doc.ID, map[string]any{"page_count": extraction.TotalPages}); err != nil {
+		return err
+	}
+	ocrPages, err := s.readScannedPages(ctx, doc.ID, data, extraction.Pages)
+	if err != nil {
+		return err
+	}
+	if err := s.update(ctx, doc.ID, map[string]any{"ocr_pages": ocrPages, "status": models.StatusChunking}); err != nil {
 		return err
 	}
 
 	chunks := pdf.ChunkDocument(doc.ID, doc.UserID, doc.Filename, extraction.Pages, pdf.DefaultChunkerConfig())
 	if len(chunks) == 0 {
-		return errors.New("no extractable text found in this PDF; if it is scanned, it needs an OCR text layer")
+		if s.ocr != nil {
+			return failWith("No readable text was found in this PDF, even after reading its scanned pages.", errors.New("no text after OCR"))
+		}
+		return failWith("No text was found in this PDF. If it's a scanned document, run it through OCR to add a text layer, then upload it again.",
+			errors.New("no extractable text"))
 	}
 	if err := s.update(ctx, doc.ID, map[string]any{
 		"status":          models.StatusEmbedding,
@@ -169,10 +221,12 @@ func (s *DocumentService) runPipeline(ctx context.Context, doc *models.Document)
 		for i := range texts {
 			texts[i] = chunks[start+i].ChunkText
 		}
+		batchStarted := time.Now()
 		vecs, err := s.embedder.EmbedDocuments(ctx, texts)
 		if err != nil {
-			return fmt.Errorf("embedding failed: %w", err)
+			return failWith("Indexing this PDF failed. Try uploading it again in a few minutes.", err)
 		}
+		log.Printf("[Doc %s] embedded passages %d-%d of %d in %s", doc.ID, start+1, end, len(chunks), time.Since(batchStarted).Round(time.Millisecond))
 		for i, v := range vecs {
 			chunks[start+i].Embedding = pgvector.NewVector(v)
 		}
@@ -192,6 +246,45 @@ func (s *DocumentService) runPipeline(ctx context.Context, doc *models.Document)
 	}
 	log.Printf("[Doc %s] READY (%d pages, %d chunks)", doc.ID, extraction.TotalPages, len(chunks))
 	return nil
+}
+
+// readScannedPages fills in the text of pages that have (almost) no text layer and returns how many it read.
+func (s *DocumentService) readScannedPages(ctx context.Context, docID string, data []byte, pages []pdf.ExtractedPage) (int, error) {
+	if s.ocr == nil {
+		return 0, nil
+	}
+	var scanned []int // indexes into pages
+	for i, p := range pages {
+		if len([]rune(strings.TrimSpace(p.Text))) < minPageTextChars {
+			scanned = append(scanned, i)
+		}
+	}
+	if len(scanned) == 0 {
+		return 0, nil
+	}
+	if len(scanned) > s.ocrMaxPages {
+		return 0, failWith(fmt.Sprintf("This PDF has %d scanned pages, and PagePilot reads up to %d scanned pages per document. Split it into smaller PDFs and upload them separately.", len(scanned), s.ocrMaxPages),
+			fmt.Errorf("%d scanned pages, OCR_MAX_PAGES is %d", len(scanned), s.ocrMaxPages))
+	}
+
+	numbers := make([]int, len(scanned))
+	for i, idx := range scanned {
+		numbers[i] = pages[idx].PageNumber
+	}
+	started := time.Now()
+	texts, err := s.ocr.Recognize(ctx, data, numbers)
+	if err != nil {
+		return 0, failWith("Reading the scanned pages of this PDF failed. Try uploading it again in a few minutes.", err)
+	}
+	read := 0
+	for i, idx := range scanned {
+		if text := strings.TrimSpace(texts[i]); text != "" {
+			pages[idx].Text = text
+			read++
+		}
+	}
+	log.Printf("[Doc %s] read %d of %d scanned pages with %s in %s", docID, read, len(scanned), s.ocr.Model(), time.Since(started).Round(time.Millisecond))
+	return read, nil
 }
 
 func (s *DocumentService) update(ctx context.Context, docID string, fields map[string]any) error {

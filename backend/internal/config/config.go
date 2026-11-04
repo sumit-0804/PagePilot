@@ -36,6 +36,15 @@ type Config struct {
 	GeminiAPIKey       string
 	EmbeddingAPIKey    string // openai-compatible provider only
 	EmbeddingBaseURL   string // openai-compatible provider only
+
+	// OCRProvider is "gemini" (read scanned pages with a Gemini model) or "none".
+	OCRProvider     string
+	OCRModel        string
+	OCRRPM          int
+	OCRTPM          int
+	OCRRPD          int
+	OCRPagesPerCall int
+	OCRMaxPages     int // scanned pages read per document, to protect the daily quota
 }
 
 // Load reads .env (cwd or repo root) and validates required settings.
@@ -84,6 +93,13 @@ func Load() (*Config, error) {
 		EmbeddingRPM:       intVar("EMBEDDING_RPM", 0),
 		EmbeddingTPM:       intVar("EMBEDDING_TPM", 0),
 		EmbeddingRPD:       intVar("EMBEDDING_RPD", 0),
+		OCRProvider:        strings.ToLower(getEnv("OCR_PROVIDER", "none")),
+		OCRModel:           getEnv("OCR_MODEL", ""),
+		OCRRPM:             intVar("OCR_RPM", 0),
+		OCRTPM:             intVar("OCR_TPM", 0),
+		OCRRPD:             intVar("OCR_RPD", 0),
+		OCRPagesPerCall:    intVar("OCR_PAGES_PER_CALL", 10),
+		OCRMaxPages:        intVar("OCR_MAX_PAGES", 100),
 	}
 
 	required := map[string]string{
@@ -105,6 +121,17 @@ func Load() (*Config, error) {
 		required["EMBEDDING_BASE_URL"] = cfg.EmbeddingBaseURL
 	default:
 		errs = append(errs, fmt.Errorf("EMBEDDING_PROVIDER must be gemini or openai, got %q", cfg.EmbeddingProvider))
+	}
+	switch cfg.OCRProvider {
+	case "gemini":
+		required["GEMINI_API_KEY"] = cfg.GeminiAPIKey
+		required["OCR_MODEL"] = cfg.OCRModel
+		required["OCR_RPM"] = positive(cfg.OCRRPM)
+		required["OCR_TPM"] = positive(cfg.OCRTPM)
+		required["OCR_RPD"] = positive(cfg.OCRRPD)
+	case "none":
+	default:
+		errs = append(errs, fmt.Errorf("OCR_PROVIDER must be gemini or none, got %q", cfg.OCRProvider))
 	}
 	for key, val := range required {
 		if val == "" {

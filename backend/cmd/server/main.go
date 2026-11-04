@@ -17,6 +17,7 @@ import (
 	"github.com/pagepilot/backend/internal/config"
 	"github.com/pagepilot/backend/internal/database"
 	"github.com/pagepilot/backend/internal/embeddings"
+	"github.com/pagepilot/backend/internal/ocr"
 	"github.com/pagepilot/backend/internal/rag"
 	"github.com/pagepilot/backend/internal/services"
 	"github.com/pagepilot/backend/internal/storage"
@@ -66,6 +67,16 @@ func run() error {
 	engine := rag.NewEngine(embedder, vectors, groq)
 
 	docService := services.NewDocumentService(db, files, embedder, vectors, cfg.EmbeddingBatchSize)
+	recognizer, err := ocr.New(ctx, cfg)
+	if err != nil {
+		return err
+	}
+	if recognizer != nil {
+		docService.UseOCR(recognizer, cfg.OCRMaxPages)
+		log.Printf("OCR: %s (limits %d RPM / %d TPM / %d RPD, up to %d scanned pages per document)", recognizer.Model(), cfg.OCRRPM, cfg.OCRTPM, cfg.OCRRPD, cfg.OCRMaxPages)
+	} else {
+		log.Println("OCR: off (scanned pages are not read)")
+	}
 	quizService := services.NewQuizService(db, docService, engine, groq)
 	flashcardService := services.NewFlashcardService(db, docService, engine, groq)
 	summaryService := services.NewSummaryService(db, docService, engine, groq)

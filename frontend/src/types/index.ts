@@ -13,6 +13,8 @@ export interface StudyDocument {
   embedding_model?: string
   chunks_total: number
   chunks_embedded: number
+  /** Pages with no text layer whose text was read by OCR. */
+  ocr_pages: number
   created_at: string
   updated_at: string
 }

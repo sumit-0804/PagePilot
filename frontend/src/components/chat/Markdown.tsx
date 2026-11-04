@@ -8,8 +8,8 @@ import { CitationChip, UnverifiedPage } from '@/components/chat/CitationChip'
 import type { Citation } from '@/types'
 import { cn } from '@/lib/utils'
 
-// Same forms the backend accepts: [Page 3], 【Page 3】, [Pages 3, 5], [Pages 3 and 5].
-const CITATION = /[[【［]\s*pages?\s*(\d+(?:\s*(?:,|and|&)\s*\d+)*)\s*[\]】］]/gi
+// Same forms the backend accepts: [Page 3], 【Page 3】, [Pages 3, 5], [Pages 3 and 5], and a doubled [[Page 3]].
+const CITATION = /\[?\s*[[【［]\s*pages?\s*(\d+(?:\s*(?:,|and|&)\s*\d+)*)\s*[\]】］]\s*\]?/gi
 
 /** Turns page citations into markdown links that the renderer swaps for highlighter chips. */
 function linkCitations(text: string) {

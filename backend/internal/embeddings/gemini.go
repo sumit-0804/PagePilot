@@ -4,12 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
-	"sync"
+	"log"
 	"time"
-	_ "time/tzdata" // Windows has no system zoneinfo; needed for the Pacific-time daily reset
 
-	"golang.org/x/time/rate"
+	"github.com/pagepilot/backend/internal/gemini"
 	"google.golang.org/genai"
 )
 
@@ -37,7 +35,7 @@ type GeminiEmbedder struct {
 	model      string
 	dim        int
 	call       embedCall
-	limiter    *Limiter
+	limiter    *gemini.Limiter
 	sleep      func(ctx context.Context, d time.Duration) error
 	maxRetries int
 }
@@ -66,16 +64,16 @@ func NewGeminiEmbedder(ctx context.Context, cfg GeminiConfig) (*GeminiEmbedder, 
 		}
 		return out, nil
 	}
-	return newGeminiEmbedder(cfg, call, NewLimiter(cfg.RPM, cfg.TPM, cfg.RPD)), nil
+	return newGeminiEmbedder(cfg, call, gemini.NewLimiter(cfg.RPM, cfg.TPM, cfg.RPD)), nil
 }
 
-func newGeminiEmbedder(cfg GeminiConfig, call embedCall, limiter *Limiter) *GeminiEmbedder {
+func newGeminiEmbedder(cfg GeminiConfig, call embedCall, limiter *gemini.Limiter) *GeminiEmbedder {
 	return &GeminiEmbedder{
 		model:      cfg.Model,
 		dim:        cfg.Dimension,
 		call:       call,
 		limiter:    limiter,
-		sleep:      sleepCtx,
+		sleep:      gemini.SleepCtx,
 		maxRetries: 5,
 	}
 }
@@ -98,46 +96,54 @@ func (g *GeminiEmbedder) EmbedQuery(ctx context.Context, text string) ([]float32
 	return vecs[0], nil
 }
 
+// embed sends texts in as many calls as the rate limits need: each call carries as many of the
+// remaining texts as fit in the current minute, so nothing waits for room it doesn't need.
 func (g *GeminiEmbedder) embed(ctx context.Context, texts []string, taskType string) ([][]float32, error) {
-	tokens := estimateTokens(texts)
-	// A batch bigger than the per-minute token budget can never be admitted, so split it.
-	if tokens > g.limiter.MaxTokensPerRequest() {
-		if len(texts) == 1 {
-			return nil, fmt.Errorf("text of ~%d tokens exceeds the per-minute token limit (%d)", tokens, g.limiter.MaxTokensPerRequest())
-		}
-		mid := len(texts) / 2
-		first, err := g.embed(ctx, texts[:mid], taskType)
-		if err != nil {
-			return nil, err
-		}
-		second, err := g.embed(ctx, texts[mid:], taskType)
-		if err != nil {
-			return nil, err
-		}
-		return append(first, second...), nil
+	tokens := make([]int, len(texts))
+	for i, t := range texts {
+		tokens[i] = estimateTokens(t)
 	}
-
-	for attempt := 0; ; attempt++ {
-		if err := g.limiter.Wait(ctx, tokens); err != nil {
+	out := make([][]float32, 0, len(texts))
+	for len(texts) > 0 {
+		n, err := g.limiter.Admit(ctx, tokens)
+		if errors.Is(err, gemini.ErrDailyQuota) {
+			return nil, ErrDailyQuota
+		}
+		if err != nil {
 			return nil, err
 		}
+		vecs, err := g.callWithRetry(ctx, texts[:n], taskType)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, vecs...)
+		texts, tokens = texts[n:], tokens[n:]
+	}
+	return out, nil
+}
+
+// callWithRetry makes one admitted call, retrying if Google still reports a per-minute limit.
+func (g *GeminiEmbedder) callWithRetry(ctx context.Context, texts []string, taskType string) ([][]float32, error) {
+	for attempt := 0; ; attempt++ {
 		vecs, err := g.call(ctx, texts, taskType)
 		if err == nil {
 			return g.validate(vecs, len(texts))
 		}
 
-		apiErr, ok := asAPIError(err)
+		apiErr, ok := gemini.AsAPIError(err)
 		if !ok || apiErr.Code != 429 {
 			return nil, fmt.Errorf("gemini embedding request failed: %w", err)
 		}
-		if isDailyQuotaError(apiErr) {
+		if gemini.IsDailyQuotaError(apiErr) {
 			g.limiter.ExhaustDay()
 			return nil, ErrDailyQuota
 		}
 		if attempt >= g.maxRetries {
 			return nil, fmt.Errorf("gemini embedding still rate limited after %d retries: %w", g.maxRetries, err)
 		}
-		if err := g.sleep(ctx, retryDelay(apiErr, attempt)); err != nil {
+		delay := gemini.RetryDelay(apiErr, attempt)
+		log.Printf("[embeddings] Gemini rate limit hit for a batch of %d texts; retrying in %s: %s", len(texts), delay, apiErr.Message)
+		if err := g.sleep(ctx, delay); err != nil {
 			return nil, err
 		}
 	}
@@ -156,122 +162,6 @@ func (g *GeminiEmbedder) validate(vecs [][]float32, want int) ([][]float32, erro
 }
 
 // estimateTokens uses ~4 bytes per token, which over-counts non-English text (the safe side).
-func estimateTokens(texts []string) int {
-	total := 0
-	for _, t := range texts {
-		total += len(t)/4 + 1
-	}
-	return total
-}
-
-func asAPIError(err error) (genai.APIError, bool) {
-	var v genai.APIError
-	if errors.As(err, &v) {
-		return v, true
-	}
-	var p *genai.APIError
-	if errors.As(err, &p) && p != nil {
-		return *p, true
-	}
-	return genai.APIError{}, false
-}
-
-// isDailyQuotaError checks Google's quota id (e.g. "...RequestsPerDayPerProject...") in the error.
-func isDailyQuotaError(e genai.APIError) bool {
-	return strings.Contains(e.Message, "PerDay") || strings.Contains(fmt.Sprint(e.Details), "PerDay")
-}
-
-// retryDelay honors the server's RetryInfo when present, otherwise backs off exponentially.
-func retryDelay(e genai.APIError, attempt int) time.Duration {
-	for _, d := range e.Details {
-		if raw, ok := d["retryDelay"].(string); ok {
-			if dur, err := time.ParseDuration(raw); err == nil && dur > 0 {
-				return dur
-			}
-		}
-	}
-	delay := 2 * time.Second << attempt
-	if delay > time.Minute {
-		delay = time.Minute
-	}
-	return delay
-}
-
-func sleepCtx(ctx context.Context, d time.Duration) error {
-	t := time.NewTimer(d)
-	defer t.Stop()
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-t.C:
-		return nil
-	}
-}
-
-// Limiter enforces requests/minute, tokens/minute and requests/day. The daily count is in memory,
-// so a restart resets it; a 429 from Google still stops processing correctly.
-type Limiter struct {
-	rpm *rate.Limiter
-	tpm *rate.Limiter
-	rpd int
-
-	mu      sync.Mutex
-	dayKey  string
-	dayUsed int
-	now     func() time.Time
-	pacific *time.Location
-}
-
-func NewLimiter(rpm, tpm, rpd int) *Limiter {
-	loc, err := time.LoadLocation("America/Los_Angeles")
-	if err != nil {
-		loc = time.FixedZone("PST", -8*60*60)
-	}
-	return &Limiter{
-		rpm:     rate.NewLimiter(rate.Limit(float64(rpm)/60), 1),
-		tpm:     rate.NewLimiter(rate.Limit(float64(tpm)/60), tpm),
-		rpd:     rpd,
-		now:     time.Now,
-		pacific: loc,
-	}
-}
-
-func (l *Limiter) MaxTokensPerRequest() int { return l.tpm.Burst() }
-
-// Wait blocks until a request of the given size is allowed, or fails fast when the day's quota is gone.
-func (l *Limiter) Wait(ctx context.Context, tokens int) error {
-	if err := l.takeDaily(); err != nil {
-		return err
-	}
-	if err := l.rpm.Wait(ctx); err != nil {
-		return err
-	}
-	return l.tpm.WaitN(ctx, tokens)
-}
-
-// ExhaustDay marks today's quota as used, after Google reports it is gone.
-func (l *Limiter) ExhaustDay() {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	l.rollDay()
-	l.dayUsed = l.rpd
-}
-
-func (l *Limiter) takeDaily() error {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	l.rollDay()
-	if l.dayUsed >= l.rpd {
-		return ErrDailyQuota
-	}
-	l.dayUsed++
-	return nil
-}
-
-func (l *Limiter) rollDay() {
-	key := l.now().In(l.pacific).Format("2006-01-02")
-	if key != l.dayKey {
-		l.dayKey = key
-		l.dayUsed = 0
-	}
+func estimateTokens(text string) int {
+	return len(text)/4 + 1
 }

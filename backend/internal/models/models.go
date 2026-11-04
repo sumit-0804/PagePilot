@@ -32,6 +32,7 @@ type Document struct {
 	EmbeddingModel string    `json:"embedding_model,omitempty"`
 	ChunksTotal    int       `json:"chunks_total"`
 	ChunksEmbedded int       `json:"chunks_embedded"`
+	OCRPages       int       `gorm:"column:ocr_pages" json:"ocr_pages"` // pages whose text was read by OCR
 	CreatedAt      time.Time `json:"created_at"`
 	UpdatedAt      time.Time `json:"updated_at"`
 }
