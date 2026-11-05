@@ -31,23 +31,41 @@ services:
         sync: false
       - key: GROQ_MODEL
         value: openai/gpt-oss-120b
-      - key: GEMINI_API_KEY
+      - key: GEMINI_API_KEY # OCR; also the embeddings standby
         sync: false
+      # Embeddings: Cloudflare Workers AI (OpenAI-compatible). EMBEDDING_DIM must match the vector(1024) column.
       - key: EMBEDDING_PROVIDER
-        value: gemini
+        value: openai
+      - key: EMBEDDING_BASE_URL
+        value: https://api.cloudflare.com/client/v4/accounts/8abfc93b7b26bb6ecd712f858adc7929/ai/v1
+      - key: EMBEDDING_API_KEY # Cloudflare token with the Workers AI template
+        sync: false
       - key: EMBEDDING_MODEL
-        value: gemini-embedding-2
+        value: "@cf/qwen/qwen3-embedding-0.6b"
       - key: EMBEDDING_DIM
-        value: "1536"
+        value: "1024"
       - key: EMBEDDING_BATCH_SIZE
         value: "100"
-      # Rate limits: copy the numbers from your AI Studio rate-limit page.
+      - key: EMBEDDING_QUERY_PREFIX
+        value: "Instruct: Given a student's question, retrieve passages from their study documents that answer it\\nQuery:"
+      # Only used when EMBEDDING_PROVIDER=gemini (the standby): copy from your AI Studio rate-limit page.
       - key: EMBEDDING_RPM
         value: "100"
       - key: EMBEDDING_TPM
         value: "30000"
       - key: EMBEDDING_RPD
         value: "1000"
+      # Observability: optional; the API runs without them.
+      - key: DEPLOYMENT_ENVIRONMENT
+        value: production
+      - key: LANGFUSE_PUBLIC_KEY
+        sync: false
+      - key: LANGFUSE_SECRET_KEY
+        sync: false
+      - key: LANGFUSE_BASE_URL
+        sync: false
+      - key: SENTRY_DSN
+        sync: false
       - key: OCR_PROVIDER
         value: gemini
       - key: OCR_MODEL

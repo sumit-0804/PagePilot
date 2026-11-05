@@ -44,3 +44,18 @@ func Connect(databaseURL string) (*gorm.DB, error) {
 	}
 	return db, nil
 }
+
+// CheckEmbeddingDim fails when the stored vector size differs from the embedder's, which would
+// otherwise only show up as an error on the first upload or search.
+func CheckEmbeddingDim(ctx context.Context, db *gorm.DB, dim int) error {
+	var size int
+	err := db.WithContext(ctx).Raw(`select atttypmod from pg_attribute
+		where attrelid = 'public.document_chunks'::regclass and attname = 'embedding'`).Scan(&size).Error
+	if err != nil {
+		return fmt.Errorf("reading the embedding column size: %w", err)
+	}
+	if size != dim {
+		return fmt.Errorf("document_chunks.embedding stores %d dimensions but EMBEDDING_DIM is %d: apply the latest migrations or fix EMBEDDING_DIM", size, dim)
+	}
+	return nil
+}

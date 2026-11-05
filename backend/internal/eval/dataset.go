@@ -4,11 +4,13 @@ package eval
 
 import (
 	"bufio"
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -84,23 +86,32 @@ func Load(dir string) (*Data, error) {
 		if err != nil {
 			return nil, err
 		}
-		hash.Write(b)
+		hashFile(hash, b)
 		d.Corpus[strings.TrimSuffix(filepath.Base(f), ".md")] = string(b)
 	}
 
-	for name, target := range map[string]any{"rag": &d.RAG, "tools": &d.Tools, "quiz": &d.Quiz, "flashcards": &d.Flashcards} {
-		path := filepath.Join(dir, "datasets", name+".jsonl")
+	// A fixed order keeps the version stable from run to run.
+	for _, ds := range []struct {
+		name   string
+		target any
+	}{{"rag", &d.RAG}, {"tools", &d.Tools}, {"quiz", &d.Quiz}, {"flashcards", &d.Flashcards}} {
+		path := filepath.Join(dir, "datasets", ds.name+".jsonl")
 		b, err := os.ReadFile(path)
 		if err != nil {
 			return nil, err
 		}
-		hash.Write(b)
-		if err := readJSONL(path, b, target); err != nil {
+		hashFile(hash, b)
+		if err := readJSONL(path, b, ds.target); err != nil {
 			return nil, err
 		}
 	}
 	d.Version = hex.EncodeToString(hash.Sum(nil))[:12]
 	return d, d.Validate()
+}
+
+// hashFile ignores carriage returns, so a Windows (CRLF) checkout and CI (LF) get the same version.
+func hashFile(h io.Writer, b []byte) {
+	h.Write(bytes.ReplaceAll(b, []byte("\r"), nil))
 }
 
 func readJSONL(path string, b []byte, target any) error {

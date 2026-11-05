@@ -122,7 +122,7 @@ type harness struct {
 
 func newHarness(t *testing.T) *harness {
 	db := requireDB(t)
-	emb := embeddings.NewBuiltinEmbedder(1536) // must match the vector(1536) column
+	emb := embeddings.NewBuiltinEmbedder(1024) // must match the vector(1024) column
 	vectors := vectorstore.NewPgVectorStore(db)
 	files := storage.NewLocalStore(t.TempDir())
 	llm := &fakeLLM{}

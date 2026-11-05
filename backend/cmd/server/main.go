@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"syscall"
@@ -25,6 +26,14 @@ import (
 	"github.com/pagepilot/backend/internal/vectorstore"
 	"github.com/pagepilot/backend/internal/websearch"
 )
+
+// hostOf returns just the host of a URL, so logs don't show account ids in paths.
+func hostOf(raw string) string {
+	if u, err := url.Parse(raw); err == nil && u.Host != "" {
+		return u.Host
+	}
+	return "custom endpoint"
+}
 
 func main() {
 	if err := run(); err != nil {
@@ -94,7 +103,14 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	log.Printf("Embeddings: %s (%d dims, limits %d RPM / %d TPM / %d RPD)", embedder.Model(), embedder.Dimension(), cfg.EmbeddingRPM, cfg.EmbeddingTPM, cfg.EmbeddingRPD)
+	if err := database.CheckEmbeddingDim(ctx, db, embedder.Dimension()); err != nil {
+		return err
+	}
+	if cfg.EmbeddingProvider == "gemini" {
+		log.Printf("Embeddings: Gemini %s (%d dims, limits %d RPM / %d TPM / %d RPD)", embedder.Model(), embedder.Dimension(), cfg.EmbeddingRPM, cfg.EmbeddingTPM, cfg.EmbeddingRPD)
+	} else {
+		log.Printf("Embeddings: %s via %s (%d dims)", embedder.Model(), hostOf(cfg.EmbeddingBaseURL), embedder.Dimension())
+	}
 
 	vectors := vectorstore.NewPgVectorStore(db)
 	groq := rag.NewGroqClient(cfg)

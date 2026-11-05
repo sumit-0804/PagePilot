@@ -43,7 +43,7 @@ func New(ctx context.Context, cfg *config.Config) (Embedder, error) {
 		}
 		emb = g
 	case "openai":
-		emb = NewOpenAIEmbedder(cfg.EmbeddingBaseURL, cfg.EmbeddingAPIKey, cfg.EmbeddingModel, cfg.EmbeddingDim)
+		emb = NewOpenAIEmbedder(cfg.EmbeddingBaseURL, cfg.EmbeddingAPIKey, cfg.EmbeddingModel, cfg.EmbeddingDim, cfg.EmbeddingQueryPrefix)
 	default:
 		return nil, fmt.Errorf("unknown embedding provider %q", cfg.EmbeddingProvider)
 	}
@@ -117,26 +117,33 @@ func (b *BuiltinEmbedder) generateVector(text string) []float32 {
 	return vec
 }
 
-// OpenAIEmbedder calls an OpenAI-compatible /embeddings endpoint (e.g. Ollama for offline work).
+// OpenAIEmbedder calls an OpenAI-compatible /embeddings endpoint, such as Cloudflare Workers AI
+// (the production default) or Ollama for offline work.
 type OpenAIEmbedder struct {
-	url        string
-	apiKey     string
-	model      string
-	dimension  int
-	httpClient *http.Client
+	url         string
+	apiKey      string
+	model       string
+	dimension   int
+	queryPrefix string // added to queries only; some models (e.g. Qwen3) retrieve better with an instruction
+	httpClient  *http.Client
+	backoff     time.Duration // first retry delay; doubles each attempt
 }
 
-func NewOpenAIEmbedder(baseURL, apiKey, model string, dimension int) *OpenAIEmbedder {
+const maxEmbedRetries = 3
+
+func NewOpenAIEmbedder(baseURL, apiKey, model string, dimension int, queryPrefix string) *OpenAIEmbedder {
 	url := strings.TrimRight(baseURL, "/")
 	if !strings.HasSuffix(url, "/embeddings") {
 		url += "/embeddings"
 	}
 	return &OpenAIEmbedder{
-		url:        url,
-		apiKey:     apiKey,
-		model:      model,
-		dimension:  dimension,
-		httpClient: &http.Client{Timeout: 60 * time.Second},
+		url:         url,
+		apiKey:      apiKey,
+		model:       model,
+		dimension:   dimension,
+		queryPrefix: queryPrefix,
+		httpClient:  &http.Client{Timeout: 60 * time.Second},
+		backoff:     time.Second,
 	}
 }
 
@@ -144,7 +151,7 @@ func (o *OpenAIEmbedder) Dimension() int { return o.dimension }
 func (o *OpenAIEmbedder) Model() string  { return o.model }
 
 func (o *OpenAIEmbedder) EmbedQuery(ctx context.Context, text string) ([]float32, error) {
-	vecs, err := o.EmbedDocuments(ctx, []string{text})
+	vecs, err := o.EmbedDocuments(ctx, []string{o.queryPrefix + text})
 	if err != nil {
 		return nil, err
 	}
@@ -160,27 +167,9 @@ func (o *OpenAIEmbedder) EmbedDocuments(ctx context.Context, texts []string) ([]
 	if err != nil {
 		return nil, fmt.Errorf("serializing embedding request: %w", err)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, o.url, bytes.NewReader(reqBody))
+	body, err := o.post(ctx, reqBody)
 	if err != nil {
 		return nil, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	if o.apiKey != "" {
-		req.Header.Set("Authorization", "Bearer "+o.apiKey)
-	}
-
-	resp, err := o.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("embedding request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("reading embedding response: %w", err)
-	}
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("embedding provider returned status %d: %s", resp.StatusCode, truncate(string(body), 300))
 	}
 
 	var parsed struct {
@@ -205,6 +194,77 @@ func (o *OpenAIEmbedder) EmbedDocuments(ctx context.Context, texts []string) ([]
 		}
 	}
 	return vectors, nil
+}
+
+// post sends one request, retrying busy or failing providers with backoff. A used-up daily
+// allowance is returned as ErrDailyQuota at once, since retrying can't help until the reset.
+func (o *OpenAIEmbedder) post(ctx context.Context, reqBody []byte) ([]byte, error) {
+	for attempt := 0; ; attempt++ {
+		body, status, err := o.send(ctx, reqBody)
+		switch {
+		case err == nil && status == http.StatusOK:
+			return body, nil
+		case err == nil && isDailyAllowanceError(status, body):
+			return nil, ErrDailyQuota
+		case err == nil && !retryableStatus(status):
+			return nil, fmt.Errorf("embedding provider returned status %d: %s", status, truncate(string(body), 300))
+		case ctx.Err() != nil:
+			return nil, ctx.Err()
+		case attempt >= maxEmbedRetries:
+			if err != nil {
+				return nil, fmt.Errorf("embedding request failed after %d retries: %w", attempt, err)
+			}
+			return nil, fmt.Errorf("embedding provider still returned status %d after %d retries: %s", status, attempt, truncate(string(body), 300))
+		}
+		t := time.NewTimer(o.backoff << attempt)
+		select {
+		case <-ctx.Done():
+			t.Stop()
+			return nil, ctx.Err()
+		case <-t.C:
+		}
+	}
+}
+
+func (o *OpenAIEmbedder) send(ctx context.Context, reqBody []byte) ([]byte, int, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, o.url, bytes.NewReader(reqBody))
+	if err != nil {
+		return nil, 0, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if o.apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+o.apiKey)
+	}
+	resp, err := o.httpClient.Do(req)
+	if err != nil {
+		return nil, 0, fmt.Errorf("embedding request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, 0, fmt.Errorf("reading embedding response: %w", err)
+	}
+	return body, resp.StatusCode, nil
+}
+
+// Cloudflare Workers AI answers 429 with internal code 3036 when the day's free Neurons are used up
+// (https://developers.cloudflare.com/workers-ai/platform/errors/).
+func isDailyAllowanceError(status int, body []byte) bool {
+	if status != http.StatusTooManyRequests {
+		return false
+	}
+	text := strings.ToLower(string(body))
+	return strings.Contains(text, "3036") || strings.Contains(text, "daily free allocation")
+}
+
+// Busy (Cloudflare 3040 "capacity temporarily exceeded"), timed out or failing upstream.
+func retryableStatus(status int) bool {
+	switch status {
+	case http.StatusTooManyRequests, http.StatusRequestTimeout, http.StatusInternalServerError,
+		http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+		return true
+	}
+	return false
 }
 
 func truncate(s string, n int) string {

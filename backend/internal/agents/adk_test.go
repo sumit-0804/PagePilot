@@ -122,7 +122,7 @@ func setup(t *testing.T, serviceLLM rag.LLMClient) *fixture {
 	}
 	t.Cleanup(func() { db.Exec("delete from auth.users where id = ?", user) })
 
-	emb := embeddings.NewBuiltinEmbedder(1536)
+	emb := embeddings.NewBuiltinEmbedder(1024)
 	vectors := vectorstore.NewPgVectorStore(db)
 	engine := rag.NewEngine(emb, vectors, serviceLLM)
 	docs := services.NewDocumentService(db, storage.NewLocalStore(t.TempDir()), emb, vectors, 5)

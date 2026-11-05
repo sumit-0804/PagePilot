@@ -75,13 +75,21 @@ type DocumentService struct {
 	batchSize   int
 	ocr         ocr.Recognizer // nil when OCR is off
 	ocrMaxPages int
+	slots       chan struct{} // bounds how many documents are processed at once
 }
+
+// maxConcurrentProcessing keeps memory in check when many uploads (or a restart's resumed work)
+// arrive together; the rest wait their turn.
+const maxConcurrentProcessing = 2
 
 func NewDocumentService(db *gorm.DB, files storage.FileStore, embedder embeddings.Embedder, vectors vectorstore.VectorStore, batchSize int) *DocumentService {
 	if batchSize <= 0 {
 		batchSize = 100
 	}
-	return &DocumentService{db: db, files: files, embedder: embedder, vectors: vectors, batchSize: batchSize}
+	return &DocumentService{
+		db: db, files: files, embedder: embedder, vectors: vectors, batchSize: batchSize,
+		slots: make(chan struct{}, maxConcurrentProcessing),
+	}
 }
 
 // UseOCR turns on reading scanned pages, up to maxPages per document.
@@ -162,6 +170,9 @@ func (s *DocumentService) ResumeUnfinished(ctx context.Context) error {
 
 // process runs the pipeline in the background as its own trace, linked to the upload request (`from`).
 func (s *DocumentService) process(docID string, from trace.SpanContext) {
+	s.slots <- struct{}{}
+	defer func() { <-s.slots }()
+
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Hour)
 	defer cancel()
 	ctx, span := observability.StartRoot(ctx, from, "document.process", observability.TypeChain,
@@ -222,7 +233,7 @@ func reportable(err error) bool {
 
 func failureMessage(err error) string {
 	if errors.Is(err, embeddings.ErrDailyQuota) {
-		return "The daily limit for indexing documents has been reached. Upload this file again after the limit resets at midnight Pacific time."
+		return "The daily limit for indexing documents has been reached. Upload this file again after the limit resets tomorrow."
 	}
 	if errors.Is(err, ocr.ErrDailyQuota) {
 		return "The daily limit for reading scanned pages has been reached. Upload this PDF again after the limit resets at midnight Pacific time."

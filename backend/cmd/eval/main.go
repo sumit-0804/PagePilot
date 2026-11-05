@@ -200,6 +200,9 @@ func buildEnv(ctx context.Context, cfg *config.Config, tel observability.Config,
 	if err != nil {
 		return nil, err
 	}
+	if err := database.CheckEmbeddingDim(ctx, db, embedder.Dimension()); err != nil {
+		return nil, err
+	}
 	filesDir, err := os.MkdirTemp("", "pagepilot-eval-")
 	if err != nil {
 		return nil, err

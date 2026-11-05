@@ -31,6 +31,12 @@ func TestDatasetsAreValid(t *testing.T) {
 	if len(d.Version) != 12 {
 		t.Errorf("dataset version %q", d.Version)
 	}
+	for i := 0; i < 5; i++ {
+		again, err := Load("../../evaluation")
+		if err != nil || again.Version != d.Version {
+			t.Fatalf("the dataset version must be the same on every load: %q then %q", d.Version, again.Version)
+		}
+	}
 }
 
 func TestValidateRejectsBadCases(t *testing.T) {

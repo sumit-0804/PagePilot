@@ -11,8 +11,9 @@ import (
 	"google.golang.org/genai"
 )
 
-// ErrDailyQuota means the requests-per-day limit is used up until the reset at midnight Pacific time.
-var ErrDailyQuota = errors.New("daily embedding quota reached; processing can resume after the quota resets at midnight Pacific time")
+// ErrDailyQuota means the provider's daily allowance is used up (Gemini resets at midnight Pacific,
+// Cloudflare Workers AI at 00:00 UTC).
+var ErrDailyQuota = errors.New("daily embedding quota reached; processing can resume after the provider's daily reset")
 
 const (
 	taskDocument = "RETRIEVAL_DOCUMENT"
