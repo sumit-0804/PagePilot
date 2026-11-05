@@ -8,6 +8,11 @@ export default defineConfig({
   plugins: [react(), tailwindcss()],
   // Share the repo-root .env; Vite only exposes VITE_* variables to the browser.
   envDir: '..',
+  // Vercel's build variables, for Sentry's release and environment.
+  define: {
+    __APP_RELEASE__: JSON.stringify(process.env.VERCEL_GIT_COMMIT_SHA ?? ''),
+    __APP_ENVIRONMENT__: JSON.stringify(process.env.VERCEL_ENV ?? ''),
+  },
   resolve: {
     alias: { '@': path.resolve(import.meta.dirname, './src') },
   },
@@ -22,6 +27,9 @@ export default defineConfig({
           }
           if (id.includes('@supabase')) {
             return 'supabase'
+          }
+          if (id.includes('@sentry')) {
+            return 'sentry'
           }
           if (id.includes('motion') || id.includes('framer-motion')) {
             return 'motion'

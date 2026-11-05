@@ -1,3 +1,5 @@
+import { noteApiProblem, pathOnly, reportApiFailure } from '@/lib/sentry'
+import { parseSSE } from '@/lib/sse'
 import { supabase } from '@/lib/supabase'
 import type {
   AnswerFeedback,
@@ -23,11 +25,17 @@ const API_BASE = (import.meta.env.VITE_API_URL || '/api').replace(/\/$/, '')
 
 export class ApiError extends Error {
   readonly status: number
-  constructor(status: number, message: string) {
+  /** The backend's trace id (traced AI routes only), to find the request in Langfuse and Sentry. */
+  readonly traceId?: string
+  constructor(status: number, message: string, traceId?: string) {
     super(message)
+    this.name = 'ApiError'
     this.status = status
+    this.traceId = traceId
   }
 }
+
+const traceIdOf = (res: Response) => res.headers.get('X-Trace-Id') ?? undefined
 
 async function authHeader(): Promise<Record<string, string>> {
   // getSession refreshes an expired access token when needed.
@@ -44,11 +52,17 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   try {
     res = await fetch(API_BASE + path, { ...init, headers })
   } catch {
+    // Usually the user is offline or the server is down; not an app fault worth an alert.
+    noteApiProblem('request could not reach the server', pathOnly(path))
     throw new ApiError(0, "Can't reach the PagePilot server. Check that the backend is running.")
   }
   const text = await res.text()
   const body = text ? safeJSON(text) : null
-  if (!res.ok) throw new ApiError(res.status, errorMessage(body, `Request failed (${res.status})`))
+  if (!res.ok) {
+    const err = new ApiError(res.status, errorMessage(body, `Request failed (${res.status})`), traceIdOf(res))
+    if (res.status >= 500) reportApiFailure(err, { path: pathOnly(path), status: res.status, traceId: err.traceId })
+    throw err
+  }
   // A non-JSON success (e.g. a host's HTML page) means the request never reached the PagePilot API.
   if (typeof body === 'string') throw new ApiError(res.status, "The PagePilot server sent an unexpected response. Check that VITE_API_URL points to the API.")
   return body as T
@@ -91,15 +105,39 @@ export interface ChatRequest {
 }
 
 /** Sends a chat message and streams the reply over SSE. Resolves with the final "done" event. */
-async function streamChat(body: ChatRequest, { onToken, onStatus, signal }: StreamHandlers): Promise<ChatDoneEvent> {
+async function streamChat(body: ChatRequest, handlers: StreamHandlers): Promise<ChatDoneEvent> {
+  try {
+    return await readChatStream(body, handlers)
+  } catch (err) {
+    reportStreamFailure(err)
+    throw err
+  }
+}
+
+/** Reports chat failures that point at a fault: server errors, broken streams, unreadable events. */
+function reportStreamFailure(err: unknown) {
+  if (err instanceof DOMException && err.name === 'AbortError') return // the user stopped the answer
+  if (err instanceof ApiError) {
+    if (err.status >= 500) reportApiFailure(err, { path: '/chat', status: err.status, traceId: err.traceId })
+    return
+  }
+  if (err instanceof TypeError) {
+    noteApiProblem('chat stream lost its connection', '/chat') // offline or a dropped connection
+    return
+  }
+  if (err instanceof Error) reportApiFailure(err, { path: '/chat', status: 0 })
+}
+
+async function readChatStream(body: ChatRequest, { onToken, onStatus, signal }: StreamHandlers): Promise<ChatDoneEvent> {
   const res = await fetch(`${API_BASE}/chat`, {
     method: 'POST',
     headers: { ...(await authHeader()), 'Content-Type': 'application/json', Accept: 'text/event-stream' },
     body: json({ ...body, stream: true }),
     signal,
   })
+  const traceId = traceIdOf(res)
   if (!res.ok || !res.body) {
-    throw new ApiError(res.status, errorMessage(safeJSON(await res.text()), `Chat failed (${res.status})`))
+    throw new ApiError(res.status, errorMessage(safeJSON(await res.text()), `Chat failed (${res.status})`), traceId)
   }
 
   const reader = res.body.getReader()
@@ -109,20 +147,17 @@ async function streamChat(body: ChatRequest, { onToken, onStatus, signal }: Stre
     const { done, value } = await reader.read()
     if (done) break
     buffer += decoder.decode(value, { stream: true })
-    const events = buffer.split('\n\n')
-    buffer = events.pop() ?? ''
-    for (const event of events) {
-      // Lines starting with ":" are heartbeat comments.
-      const data = event.split('\n').find((line) => line.startsWith('data:'))
-      if (!data) continue
-      const payload = JSON.parse(data.slice(5))
-      if (payload.type === 'token') onToken(payload.content)
-      else if (payload.type === 'status') onStatus?.(payload.content)
-      else if (payload.type === 'error') throw new ApiError(payload.error === LOGIN_REQUIRED ? 403 : 500, payload.error)
-      else if (payload.type === 'done') return payload as ChatDoneEvent
+    const { payloads, rest } = parseSSE(buffer)
+    buffer = rest
+    for (const payload of payloads) {
+      if (payload.type === 'token') onToken(String(payload.content))
+      else if (payload.type === 'status') onStatus?.(String(payload.content))
+      else if (payload.type === 'error') {
+        throw new ApiError(payload.error === LOGIN_REQUIRED ? 403 : 500, String(payload.error), traceId)
+      } else if (payload.type === 'done') return payload as unknown as ChatDoneEvent
     }
   }
-  throw new ApiError(500, 'The answer stream ended unexpectedly. Please try again.')
+  throw new ApiError(500, 'The answer stream ended unexpectedly. Please try again.', traceId)
 }
 
 export const api = {
