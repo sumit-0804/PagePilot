@@ -1,0 +1,10 @@
+{"id":"quiz-cell-01","doc":"cell-biology","topic":"organelles and their jobs","count":4,"difficulty":"easy"}
+{"id":"quiz-cell-02","doc":"cell-biology","topic":"moving substances across the cell membrane","count":4,"difficulty":"medium"}
+{"id":"quiz-net-01","doc":"computer-networks","topic":"TCP and UDP","count":4,"difficulty":"medium"}
+{"id":"quiz-net-02","doc":"computer-networks","topic":"DNS and HTTP status codes","count":4,"difficulty":"easy"}
+{"id":"quiz-fr-01","doc":"french-revolution","topic":"causes of the revolution","count":4,"difficulty":"easy"}
+{"id":"quiz-fr-02","doc":"french-revolution","topic":"the Republic and the Terror","count":4,"difficulty":"hard"}
+{"id":"quiz-lr-01","doc":"linear-regression","topic":"least squares and residuals","count":4,"difficulty":"medium"}
+{"id":"quiz-lr-02","doc":"linear-regression","topic":"regression assumptions","count":4,"difficulty":"hard"}
+{"id":"quiz-wc-01","doc":"water-cycle","topic":"evaporation and condensation","count":4,"difficulty":"easy"}
+{"id":"quiz-wc-02","doc":"water-cycle","topic":"groundwater and stores of water","count":4,"difficulty":"medium"}

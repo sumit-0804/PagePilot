@@ -30,6 +30,10 @@ type Config struct {
 
 	// SampleRatio is the share of new traces kept, from 0 to 1.
 	SampleRatio float64
+
+	// SpanProcessors receive every span in-process, with or without an exporter (the eval runner
+	// reads tool calls from them).
+	SpanProcessors []sdktrace.SpanProcessor
 }
 
 // Enabled reports whether some trace exporter is configured.
@@ -41,35 +45,40 @@ func (c Config) Enabled() bool {
 // When nothing is configured it installs nothing, so spans are no-ops.
 func Setup(ctx context.Context, cfg Config) (shutdown func(context.Context) error, err error) {
 	noop := func(context.Context) error { return nil }
-	if !cfg.Enabled() {
+	if !cfg.Enabled() && len(cfg.SpanProcessors) == 0 {
 		return noop, nil
 	}
 
-	exporter, err := newExporter(ctx, cfg)
-	if err != nil {
-		return noop, fmt.Errorf("creating trace exporter: %w", err)
-	}
 	res, err := newResource(ctx, cfg)
 	if err != nil {
 		return noop, fmt.Errorf("creating trace resource: %w", err)
 	}
-
 	ratio := cfg.SampleRatio
 	if ratio <= 0 || ratio > 1 {
 		ratio = 1
 	}
-	tp := sdktrace.NewTracerProvider(
+	opts := []sdktrace.TracerProviderOption{
 		sdktrace.WithResource(res),
 		sdktrace.WithSampler(sdktrace.ParentBased(sdktrace.TraceIDRatioBased(ratio))),
 		sdktrace.WithSpanProcessor(propagator{}),
+	}
+	for _, p := range cfg.SpanProcessors {
+		opts = append(opts, sdktrace.WithSpanProcessor(p))
+	}
+	if cfg.Enabled() {
+		exporter, err := newExporter(ctx, cfg)
+		if err != nil {
+			return noop, fmt.Errorf("creating trace exporter: %w", err)
+		}
 		// Spans are queued and exported in the background; a full queue drops spans instead of blocking requests.
-		sdktrace.WithBatcher(exporter,
+		opts = append(opts, sdktrace.WithBatcher(exporter,
 			sdktrace.WithMaxQueueSize(2048),
 			sdktrace.WithMaxExportBatchSize(256),
 			sdktrace.WithBatchTimeout(5*time.Second),
 			sdktrace.WithExportTimeout(10*time.Second),
-		),
-	)
+		))
+	}
+	tp := sdktrace.NewTracerProvider(opts...)
 	// No propagator is installed on purpose: traces start at this API, so a client-sent traceparent
 	// can't attach our spans to a parent Langfuse never receives.
 	otel.SetTracerProvider(tp)

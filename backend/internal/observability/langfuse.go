@@ -66,6 +66,19 @@ func (c *LangfuseClient) Score(ctx context.Context, traceID, messageID string, r
 	return c.do(ctx, http.MethodPost, "/api/public/scores", body)
 }
 
+// ScoreTrace records a numeric score (such as an eval metric) on a trace. Its id is derived from the
+// trace and name, so re-sending updates the score instead of adding another.
+func (c *LangfuseClient) ScoreTrace(ctx context.Context, traceID, name string, value float64, comment string) error {
+	body, err := json.Marshal(scoreRequest{
+		ID: traceID + "-" + name, TraceID: traceID, Name: name,
+		Value: value, DataType: "NUMERIC", Comment: comment, Environment: c.environment,
+	})
+	if err != nil {
+		return err
+	}
+	return c.do(ctx, http.MethodPost, "/api/public/scores", body)
+}
+
 // Remove deletes the feedback score of a message whose rating was cleared.
 func (c *LangfuseClient) Remove(ctx context.Context, messageID string) error {
 	return c.do(ctx, http.MethodDelete, "/api/public/scores/"+url.PathEscape(feedbackScoreID(messageID)), nil)
