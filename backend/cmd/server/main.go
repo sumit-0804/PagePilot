@@ -58,6 +58,20 @@ func run() error {
 		log.Println("Tracing: off (no LANGFUSE_* or OTEL_EXPORTER_OTLP_* settings)")
 	}
 
+	flushSentry, err := observability.InitSentry(observability.SentryConfig{
+		DSN: cfg.SentryDSN, Environment: cfg.Environment, Release: cfg.Version,
+	})
+	switch {
+	case err != nil:
+		// Error reporting is optional; a bad DSN must not stop the API.
+		log.Printf("Sentry: off (%v)", err)
+	case cfg.SentryDSN != "":
+		log.Printf("Sentry: on (environment %s)", cfg.Environment)
+	default:
+		log.Println("Sentry: off (no SENTRY_DSN)")
+	}
+	defer flushSentry(2 * time.Second)
+
 	db, err := database.Connect(cfg.DatabaseURL)
 	if err != nil {
 		return err

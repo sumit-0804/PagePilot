@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
@@ -11,6 +12,14 @@ import (
 
 // TraceHeader carries the trace id back to the client, so a frontend error report can point at the trace.
 const TraceHeader = "X-Trace-Id"
+
+// routePattern returns the matched chi route, such as /api/conversations/{id}, which holds no ids.
+func routePattern(r *http.Request) string {
+	if rc := chi.RouteContext(r.Context()); rc != nil {
+		return rc.RoutePattern()
+	}
+	return ""
+}
 
 // HTTP traces one route. It is applied per route, so only the AI paths use Langfuse quota.
 // It wraps the writer with chi's wrapper rather than otelhttp's, because chi's keeps Unwrap,

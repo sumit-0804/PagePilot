@@ -16,6 +16,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/pagepilot/backend/internal/auth"
 	"github.com/pagepilot/backend/internal/embeddings"
+	"github.com/pagepilot/backend/internal/observability"
 	"github.com/pagepilot/backend/internal/services"
 )
 
@@ -76,7 +77,7 @@ func (a *API) UploadDocumentHandler(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseMultipartForm(10 << 20); err != nil {
 		var tooLarge *http.MaxBytesError
 		if errors.As(err, &tooLarge) {
-			a.fail(w, services.ErrTooLarge)
+			a.fail(w, r, services.ErrTooLarge)
 			return
 		}
 		respondError(w, http.StatusBadRequest, "invalid multipart form")
@@ -99,7 +100,7 @@ func (a *API) UploadDocumentHandler(w http.ResponseWriter, r *http.Request) {
 
 	doc, err := a.docService.Upload(r.Context(), auth.UserID(r.Context()), header.Filename, data)
 	if err != nil {
-		a.fail(w, err)
+		a.fail(w, r, err)
 		return
 	}
 	respondJSON(w, http.StatusAccepted, doc)
@@ -108,7 +109,7 @@ func (a *API) UploadDocumentHandler(w http.ResponseWriter, r *http.Request) {
 func (a *API) ListDocumentsHandler(w http.ResponseWriter, r *http.Request) {
 	docs, err := a.docService.List(r.Context(), auth.UserID(r.Context()))
 	if err != nil {
-		a.fail(w, err)
+		a.fail(w, r, err)
 		return
 	}
 	respondJSON(w, http.StatusOK, docs)
@@ -117,7 +118,7 @@ func (a *API) ListDocumentsHandler(w http.ResponseWriter, r *http.Request) {
 func (a *API) GetDocumentHandler(w http.ResponseWriter, r *http.Request) {
 	doc, err := a.docService.Get(r.Context(), auth.UserID(r.Context()), chi.URLParam(r, "id"))
 	if err != nil {
-		a.fail(w, err)
+		a.fail(w, r, err)
 		return
 	}
 	respondJSON(w, http.StatusOK, doc)
@@ -126,7 +127,7 @@ func (a *API) GetDocumentHandler(w http.ResponseWriter, r *http.Request) {
 func (a *API) GetDocumentStatusHandler(w http.ResponseWriter, r *http.Request) {
 	doc, err := a.docService.Get(r.Context(), auth.UserID(r.Context()), chi.URLParam(r, "id"))
 	if err != nil {
-		a.fail(w, err)
+		a.fail(w, r, err)
 		return
 	}
 	respondJSON(w, http.StatusOK, map[string]any{
@@ -144,7 +145,7 @@ func (a *API) GetDocumentStatusHandler(w http.ResponseWriter, r *http.Request) {
 func (a *API) DocumentFileHandler(w http.ResponseWriter, r *http.Request) {
 	url, err := a.docService.FileURL(r.Context(), auth.UserID(r.Context()), chi.URLParam(r, "id"))
 	if err != nil {
-		a.fail(w, err)
+		a.fail(w, r, err)
 		return
 	}
 	respondJSON(w, http.StatusOK, map[string]string{"url": url})
@@ -159,7 +160,7 @@ func (a *API) DocumentSectionHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	sec, err := a.docService.Section(r.Context(), auth.UserID(r.Context()), chi.URLParam(r, "id"), n)
 	if err != nil {
-		a.fail(w, err)
+		a.fail(w, r, err)
 		return
 	}
 	respondJSON(w, http.StatusOK, map[string]any{"number": sec.Number, "label": sec.Label, "text": sec.Text})
@@ -167,7 +168,7 @@ func (a *API) DocumentSectionHandler(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) DeleteDocumentHandler(w http.ResponseWriter, r *http.Request) {
 	if err := a.docService.Delete(r.Context(), auth.UserID(r.Context()), chi.URLParam(r, "id")); err != nil {
-		a.fail(w, err)
+		a.fail(w, r, err)
 		return
 	}
 	respondJSON(w, http.StatusOK, map[string]string{"message": "Document deleted"})
@@ -184,12 +185,12 @@ func (a *API) CreateConversationHandler(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	if auth.IsGuest(r.Context()) && len(body.DocumentIDs) > 0 {
-		a.fail(w, services.ErrLoginRequired)
+		a.fail(w, r, services.ErrLoginRequired)
 		return
 	}
 	conv, err := a.chatService.CreateConversation(r.Context(), auth.UserID(r.Context()), body.DocumentIDs, body.Title)
 	if err != nil {
-		a.fail(w, err)
+		a.fail(w, r, err)
 		return
 	}
 	respondJSON(w, http.StatusCreated, conv)
@@ -204,7 +205,7 @@ func (a *API) AttachDocumentHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	conv, err := a.chatService.AttachDocument(r.Context(), auth.UserID(r.Context()), chi.URLParam(r, "id"), body.DocumentID)
 	if err != nil {
-		a.fail(w, err)
+		a.fail(w, r, err)
 		return
 	}
 	respondJSON(w, http.StatusOK, conv)
@@ -213,7 +214,7 @@ func (a *API) AttachDocumentHandler(w http.ResponseWriter, r *http.Request) {
 func (a *API) DetachDocumentHandler(w http.ResponseWriter, r *http.Request) {
 	conv, err := a.chatService.DetachDocument(r.Context(), auth.UserID(r.Context()), chi.URLParam(r, "id"), chi.URLParam(r, "docId"))
 	if err != nil {
-		a.fail(w, err)
+		a.fail(w, r, err)
 		return
 	}
 	respondJSON(w, http.StatusOK, conv)
@@ -235,7 +236,7 @@ func (a *API) ClaimGuestHandler(verifier *auth.Verifier) http.HandlerFunc {
 			return
 		}
 		if err := a.chatService.ClaimGuestData(r.Context(), guest.UserID, auth.UserID(r.Context())); err != nil {
-			a.fail(w, err)
+			a.fail(w, r, err)
 			return
 		}
 		respondJSON(w, http.StatusOK, map[string]string{"message": "Guest chats moved to your account"})
@@ -245,7 +246,7 @@ func (a *API) ClaimGuestHandler(verifier *auth.Verifier) http.HandlerFunc {
 func (a *API) ListConversationsHandler(w http.ResponseWriter, r *http.Request) {
 	convs, err := a.chatService.ListConversations(r.Context(), auth.UserID(r.Context()))
 	if err != nil {
-		a.fail(w, err)
+		a.fail(w, r, err)
 		return
 	}
 	respondJSON(w, http.StatusOK, convs)
@@ -254,7 +255,7 @@ func (a *API) ListConversationsHandler(w http.ResponseWriter, r *http.Request) {
 func (a *API) GetConversationHandler(w http.ResponseWriter, r *http.Request) {
 	conv, err := a.chatService.GetConversation(r.Context(), auth.UserID(r.Context()), chi.URLParam(r, "id"))
 	if err != nil {
-		a.fail(w, err)
+		a.fail(w, r, err)
 		return
 	}
 	respondJSON(w, http.StatusOK, conv)
@@ -263,7 +264,7 @@ func (a *API) GetConversationHandler(w http.ResponseWriter, r *http.Request) {
 func (a *API) GetConversationMessagesHandler(w http.ResponseWriter, r *http.Request) {
 	conv, err := a.chatService.GetConversation(r.Context(), auth.UserID(r.Context()), chi.URLParam(r, "id"))
 	if err != nil {
-		a.fail(w, err)
+		a.fail(w, r, err)
 		return
 	}
 	respondJSON(w, http.StatusOK, conv.Messages)
@@ -271,7 +272,7 @@ func (a *API) GetConversationMessagesHandler(w http.ResponseWriter, r *http.Requ
 
 func (a *API) DeleteConversationHandler(w http.ResponseWriter, r *http.Request) {
 	if err := a.chatService.DeleteConversation(r.Context(), auth.UserID(r.Context()), chi.URLParam(r, "id")); err != nil {
-		a.fail(w, err)
+		a.fail(w, r, err)
 		return
 	}
 	respondJSON(w, http.StatusOK, map[string]string{"message": "Conversation deleted"})
@@ -306,18 +307,18 @@ func (a *API) ChatHandler(w http.ResponseWriter, r *http.Request) {
 	if guest {
 		// Checked up front so a guest past the limit doesn't leave empty conversations behind.
 		if len(body.DocumentIDs) > 0 {
-			a.fail(w, services.ErrLoginRequired)
+			a.fail(w, r, services.ErrLoginRequired)
 			return
 		}
 		if err := a.chatService.CheckGuestAllowance(ctx, userID); err != nil {
-			a.fail(w, err)
+			a.fail(w, r, err)
 			return
 		}
 	}
 	if body.ConversationID == "" {
 		conv, err := a.chatService.CreateConversation(ctx, userID, body.DocumentIDs, "")
 		if err != nil {
-			a.fail(w, err)
+			a.fail(w, r, err)
 			return
 		}
 		body.ConversationID = conv.ID
@@ -327,7 +328,7 @@ func (a *API) ChatHandler(w http.ResponseWriter, r *http.Request) {
 	if !body.Stream && r.Header.Get("Accept") != "text/event-stream" {
 		result, err := a.chatService.SendMessage(ctx, userID, body.ConversationID, body.Message, opts, nil)
 		if err != nil {
-			a.fail(w, err)
+			a.fail(w, r, err)
 			return
 		}
 		respondJSON(w, http.StatusOK, map[string]any{
@@ -395,6 +396,9 @@ func (a *API) ChatHandler(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		log.Printf("chat: %v", err)
+		if !services.IsUserError(err) {
+			observability.CaptureRequest(r, err, observability.CategoryChat)
+		}
 		_ = send(map[string]any{"type": "error", "error": publicMessage(err)})
 		return
 	}
@@ -416,7 +420,7 @@ func (a *API) GenerateQuizHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	resp, err := a.quizService.GenerateQuiz(r.Context(), auth.UserID(r.Context()), req)
 	if err != nil {
-		a.fail(w, err)
+		a.fail(w, r, err)
 		return
 	}
 	respondJSON(w, http.StatusCreated, resp)
@@ -425,7 +429,7 @@ func (a *API) GenerateQuizHandler(w http.ResponseWriter, r *http.Request) {
 func (a *API) GetQuizHandler(w http.ResponseWriter, r *http.Request) {
 	resp, err := a.quizService.GetSession(r.Context(), auth.UserID(r.Context()), chi.URLParam(r, "id"))
 	if err != nil {
-		a.fail(w, err)
+		a.fail(w, r, err)
 		return
 	}
 	respondJSON(w, http.StatusOK, resp)
@@ -438,7 +442,7 @@ func (a *API) AnswerQuizHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	feedback, err := a.quizService.SubmitAnswer(r.Context(), auth.UserID(r.Context()), chi.URLParam(r, "id"), req)
 	if err != nil {
-		a.fail(w, err)
+		a.fail(w, r, err)
 		return
 	}
 	respondJSON(w, http.StatusOK, feedback)
@@ -453,7 +457,7 @@ func (a *API) GenerateFlashcardsHandler(w http.ResponseWriter, r *http.Request) 
 	}
 	set, err := a.flashcardService.GenerateFlashcards(r.Context(), auth.UserID(r.Context()), req)
 	if err != nil {
-		a.fail(w, err)
+		a.fail(w, r, err)
 		return
 	}
 	respondJSON(w, http.StatusCreated, set)
@@ -462,7 +466,7 @@ func (a *API) GenerateFlashcardsHandler(w http.ResponseWriter, r *http.Request) 
 func (a *API) ListFlashcardsHandler(w http.ResponseWriter, r *http.Request) {
 	sets, err := a.flashcardService.ListFlashcardSets(r.Context(), auth.UserID(r.Context()), r.URL.Query().Get("document_id"))
 	if err != nil {
-		a.fail(w, err)
+		a.fail(w, r, err)
 		return
 	}
 	respondJSON(w, http.StatusOK, sets)
@@ -471,7 +475,7 @@ func (a *API) ListFlashcardsHandler(w http.ResponseWriter, r *http.Request) {
 func (a *API) GetFlashcardSetHandler(w http.ResponseWriter, r *http.Request) {
 	set, err := a.flashcardService.GetFlashcardSet(r.Context(), auth.UserID(r.Context()), chi.URLParam(r, "id"))
 	if err != nil {
-		a.fail(w, err)
+		a.fail(w, r, err)
 		return
 	}
 	respondJSON(w, http.StatusOK, set)
@@ -485,7 +489,7 @@ func (a *API) UpdateFlashcardStatusHandler(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	if err := a.flashcardService.UpdateCardStatus(r.Context(), auth.UserID(r.Context()), chi.URLParam(r, "cardId"), body.Status); err != nil {
-		a.fail(w, err)
+		a.fail(w, r, err)
 		return
 	}
 	respondJSON(w, http.StatusOK, map[string]string{"message": "Card status updated"})
@@ -504,7 +508,7 @@ func (a *API) GenerateSummaryHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	resp, err := a.summaryService.GenerateSummary(r.Context(), auth.UserID(r.Context()), req)
 	if err != nil {
-		a.fail(w, err)
+		a.fail(w, r, err)
 		return
 	}
 	respondJSON(w, http.StatusOK, resp)
@@ -520,7 +524,7 @@ func (a *API) GetProgressHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	progress, err := a.progressService.Get(r.Context(), auth.UserID(r.Context()), docID)
 	if err != nil {
-		a.fail(w, err)
+		a.fail(w, r, err)
 		return
 	}
 	respondJSON(w, http.StatusOK, progress)
@@ -528,8 +532,8 @@ func (a *API) GetProgressHandler(w http.ResponseWriter, r *http.Request) {
 
 // Helpers
 
-// fail maps service errors to status codes; unexpected errors are logged and returned as 500.
-func (a *API) fail(w http.ResponseWriter, err error) {
+// fail maps service errors to status codes; unexpected errors are logged, reported to Sentry and returned as 500.
+func (a *API) fail(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
 	case errors.Is(err, services.ErrNotFound):
 		respondError(w, http.StatusNotFound, "not found")
@@ -545,6 +549,10 @@ func (a *API) fail(w http.ResponseWriter, err error) {
 		respondError(w, http.StatusTooManyRequests, err.Error())
 	default:
 		log.Printf("request failed: %v", err)
+		// A cancelled request means the client went away, which is not a fault to report.
+		if !errors.Is(err, context.Canceled) {
+			observability.CaptureRequest(r, err, observability.CategoryHTTP)
+		}
 		respondError(w, http.StatusInternalServerError, publicMessage(err))
 	}
 }

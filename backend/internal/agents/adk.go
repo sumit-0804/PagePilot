@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/openai/openai-go/v3/option"
 	"github.com/pagepilot/backend/internal/models"
+	"github.com/pagepilot/backend/internal/observability"
 	"github.com/pagepilot/backend/internal/rag"
 	"github.com/pagepilot/backend/internal/services"
 	"github.com/pagepilot/backend/internal/websearch"
@@ -129,8 +130,11 @@ func (t *turn) addSource(c models.Citation) int {
 }
 
 // logToolError records tool failures; the model still gets the error and decides how to recover.
-func logToolError(_ agent.Context, tl tool.Tool, _ map[string]any, err error) (map[string]any, error) {
+func logToolError(ctx agent.Context, tl tool.Tool, _ map[string]any, err error) (map[string]any, error) {
 	log.Printf("[agent] %s failed: %v", tl.Name(), err)
+	if !services.IsUserError(err) {
+		observability.Capture(ctx, err, observability.CategoryTool, map[string]string{"tool": tl.Name()})
+	}
 	return nil, nil
 }
 

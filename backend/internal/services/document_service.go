@@ -39,6 +39,21 @@ var (
 	ErrNotReady        = errors.New("document is not ready yet")
 )
 
+// IsUserError reports errors caused by the request or by plan limits rather than a fault in the
+// app, so they are answered with a 4xx and not reported to Sentry.
+func IsUserError(err error) bool {
+	for _, target := range []error{
+		ErrNotFound, ErrInvalidInput, ErrUnsupportedFile, ErrEmptyFile, ErrTooLarge, ErrNotReady,
+		ErrAlreadyAnswered, ErrLoginRequired, embeddings.ErrDailyQuota, ocr.ErrDailyQuota,
+		context.Canceled,
+	} {
+		if errors.Is(err, target) {
+			return true
+		}
+	}
+	return false
+}
+
 var mimeTypes = map[extract.Format]string{
 	extract.PDF:  "application/pdf",
 	extract.DOCX: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -158,6 +173,7 @@ func (s *DocumentService) process(docID string, from trace.SpanContext) {
 	var doc models.Document
 	if err = s.db.WithContext(ctx).First(&doc, "id = ?", docID).Error; err != nil {
 		log.Printf("[Doc %s] loading for processing: %v", docID, err)
+		observability.Capture(ctx, err, observability.CategoryDocument, nil)
 		return
 	}
 	user := observability.AttrUserID.String(observability.UserRef(doc.UserID))
@@ -165,8 +181,12 @@ func (s *DocumentService) process(docID string, from trace.SpanContext) {
 	ctx = observability.WithTraceAttributes(ctx, user)
 	if err = s.runPipeline(ctx, &doc); err != nil {
 		log.Printf("[Doc %s] processing failed: %v", docID, err)
+		if reportable(err) {
+			observability.Capture(ctx, err, observability.CategoryDocument, map[string]string{"document_format": doc.Format})
+		}
 		if uerr := s.update(ctx, docID, map[string]any{"status": models.StatusFailed, "error_message": failureMessage(err)}); uerr != nil {
 			log.Printf("[Doc %s] recording failure: %v", docID, uerr)
+			observability.Capture(ctx, uerr, observability.CategoryDocument, nil)
 		}
 	}
 }
@@ -175,13 +195,29 @@ func (s *DocumentService) process(docID string, from trace.SpanContext) {
 type processingError struct {
 	message string
 	cause   error
+	infra   bool // a provider or service failed, rather than the file being unusable
 }
 
 func (e *processingError) Error() string { return e.message + ": " + e.cause.Error() }
 func (e *processingError) Unwrap() error { return e.cause }
 
+// failWith is for files that can't be used (no text, damaged, too many scanned pages).
 func failWith(message string, cause error) error {
 	return &processingError{message: message, cause: cause}
+}
+
+// failInfra is for failures of a service we depend on, which are worth an alert.
+func failInfra(message string, cause error) error {
+	return &processingError{message: message, cause: cause, infra: true}
+}
+
+// reportable says whether a processing failure is a fault to report, not a bad file or a used-up quota.
+func reportable(err error) bool {
+	if IsUserError(err) {
+		return false
+	}
+	var pe *processingError
+	return !errors.As(err, &pe) || pe.infra
 }
 
 func failureMessage(err error) string {
@@ -254,7 +290,7 @@ func (s *DocumentService) runPipeline(ctx context.Context, doc *models.Document)
 		vecs, err := s.embedder.EmbedDocuments(embedCtx, texts)
 		observability.End(span, err)
 		if err != nil {
-			return failWith("Indexing this file failed. Try uploading it again in a few minutes.", err)
+			return failInfra("Indexing this file failed. Try uploading it again in a few minutes.", err)
 		}
 		log.Printf("[Doc %s] embedded passages %d-%d of %d in %s", doc.ID, start+1, end, len(chunks), time.Since(batchStarted).Round(time.Millisecond))
 		for i, v := range vecs {
@@ -400,7 +436,7 @@ func (s *DocumentService) readScannedPages(ctx context.Context, docID string, da
 	texts, err := s.ocr.Recognize(ocrCtx, data, numbers)
 	observability.End(span, err)
 	if err != nil {
-		return 0, failWith("Reading the scanned pages of this PDF failed. Try uploading it again in a few minutes.", err)
+		return 0, failInfra("Reading the scanned pages of this PDF failed. Try uploading it again in a few minutes.", err)
 	}
 	read := 0
 	for i, idx := range scanned {

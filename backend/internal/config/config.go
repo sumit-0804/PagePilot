@@ -56,6 +56,7 @@ type Config struct {
 	LangfuseSecretKey string
 	LangfuseBaseURL   string
 	TraceSampleRatio  float64 // share of traces kept, 0 < r <= 1
+	SentryDSN         string
 }
 
 // Load reads .env (cwd or repo root) and validates required settings.
@@ -119,6 +120,7 @@ func Load() (*Config, error) {
 		LangfuseSecretKey:   getEnv("LANGFUSE_SECRET_KEY", ""),
 		LangfuseBaseURL:     getEnv("LANGFUSE_BASE_URL", "https://cloud.langfuse.com"),
 		TraceSampleRatio:    1,
+		SentryDSN:           getEnv("SENTRY_DSN", ""),
 	}
 	if raw := getEnv("OTEL_TRACES_SAMPLER_ARG", ""); raw != "" {
 		r, err := strconv.ParseFloat(raw, 64)

@@ -89,7 +89,7 @@ func (propagator) OnStart(parent context.Context, s sdktrace.ReadWriteSpan) {
 		s.SetAttributes(attrs...)
 	}
 }
-func (propagator) OnEnd(sdktrace.ReadOnlySpan)       {}
+func (propagator) OnEnd(sdktrace.ReadOnlySpan)      {}
 func (propagator) Shutdown(context.Context) error   { return nil }
 func (propagator) ForceFlush(context.Context) error { return nil }
 

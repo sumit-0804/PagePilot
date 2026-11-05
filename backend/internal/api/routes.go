@@ -3,6 +3,7 @@ package api
 import (
 	"net/http"
 
+	sentryhttp "github.com/getsentry/sentry-go/http"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/cors"
@@ -17,6 +18,8 @@ func SetupRouter(api *API, verifier *auth.Verifier, allowedOrigins []string) htt
 	r.Use(middleware.RealIP)
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
+	// Inside Recoverer: Sentry reports a panic, then re-panics so Recoverer still answers 500.
+	r.Use(sentryhttp.New(sentryhttp.Options{Repanic: true}).Handle)
 
 	// Auth uses bearer tokens, not cookies, so credentials are not needed.
 	r.Use(cors.Handler(cors.Options{
