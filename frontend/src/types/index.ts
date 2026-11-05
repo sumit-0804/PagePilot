@@ -67,6 +67,15 @@ export interface Message {
   citations_json?: string
   metadata_json?: string
   created_at: string
+  /** The user's thumbs up/down on an answer, if any. */
+  feedback?: MessageRating
+}
+
+export type RatingReason = 'incorrect' | 'not_grounded' | 'unhelpful' | 'unclear' | 'other'
+
+export interface MessageRating {
+  rating: 1 | -1
+  reason?: RatingReason
 }
 
 export interface Conversation {

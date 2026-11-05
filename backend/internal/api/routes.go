@@ -24,7 +24,7 @@ func SetupRouter(api *API, verifier *auth.Verifier, allowedOrigins []string) htt
 	// Auth uses bearer tokens, not cookies, so credentials are not needed.
 	r.Use(cors.Handler(cors.Options{
 		AllowedOrigins: allowedOrigins,
-		AllowedMethods: []string{"GET", "POST", "PATCH", "DELETE", "OPTIONS"},
+		AllowedMethods: []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
 		AllowedHeaders: []string{"Accept", "Authorization", "Content-Type"},
 		ExposedHeaders: []string{observability.TraceHeader},
 		MaxAge:         300,
@@ -53,6 +53,10 @@ func SetupRouter(api *API, verifier *auth.Verifier, allowedOrigins []string) htt
 
 			// Only the AI routes are traced (observability.HTTP), to keep within Langfuse's free quota.
 			r.With(observability.HTTP("/api/chat")).Post("/chat", api.ChatHandler)
+
+			// Guests can rate the answer they got too.
+			r.Put("/messages/{id}/feedback", api.RateMessageHandler)
+			r.Delete("/messages/{id}/feedback", api.ClearMessageRatingHandler)
 
 			r.Route("/quizzes", func(r chi.Router) {
 				r.With(auth.RequireAccount, observability.HTTP("/api/quizzes/generate")).Post("/generate", api.GenerateQuizHandler)

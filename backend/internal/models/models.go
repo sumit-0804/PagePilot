@@ -76,8 +76,8 @@ type Conversation struct {
 
 // ConversationDocument attaches one of the user's documents to a conversation.
 type ConversationDocument struct {
-	ConversationID string    `gorm:"primaryKey"`
-	DocumentID     string    `gorm:"primaryKey"`
+	ConversationID string `gorm:"primaryKey"`
+	DocumentID     string `gorm:"primaryKey"`
 	UserID         string
 	CreatedAt      time.Time
 }
@@ -109,8 +109,28 @@ type Message struct {
 	Type           string    `json:"type"` // "chat", "quiz", "flashcard", "summary", "explanation"
 	CitationsJSON  string    `json:"citations_json,omitempty"`
 	MetadataJSON   string    `json:"metadata_json,omitempty"`
+	TraceID        *string   `json:"-"` // Langfuse trace of the turn that wrote it; internal only
 	CreatedAt      time.Time `json:"created_at"`
+
+	Feedback *Feedback `gorm:"-" json:"feedback,omitempty"` // the user's rating, loaded by ChatService
 }
+
+// Feedback is a thumbs up (1) or down (-1) on an assistant message, with an optional reason.
+type Feedback struct {
+	Rating int    `json:"rating"`
+	Reason string `json:"reason,omitempty"`
+}
+
+// MessageFeedback is the stored rating; one per assistant message.
+type MessageFeedback struct {
+	MessageID string `gorm:"primaryKey"`
+	Rating    int
+	Reason    *string
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
+func (MessageFeedback) TableName() string { return "message_feedback" }
 
 type QuizSession struct {
 	ID             string    `gorm:"primaryKey" json:"id"`

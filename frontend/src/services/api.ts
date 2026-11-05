@@ -14,6 +14,7 @@ import type {
   FollowUp,
   FollowUpKind,
   Message,
+  MessageRating,
   Progress,
   QuestionType,
   QuizSession,
@@ -191,6 +192,11 @@ export const api = {
   },
   chat: {
     stream: streamChat,
+  },
+  messages: {
+    rate: (id: string, rating: MessageRating) =>
+      request<MessageRating>(`/messages/${id}/feedback`, { method: 'PUT', body: json(rating) }),
+    clearRating: (id: string) => request<void>(`/messages/${id}/feedback`, { method: 'DELETE' }),
   },
   quizzes: {
     get: (id: string) => request<QuizSession>(`/quizzes/${id}`),

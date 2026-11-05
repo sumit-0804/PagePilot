@@ -151,7 +151,13 @@ func run() error {
 		},
 		"storage": files.Check,
 	}
-	apiServer := api.NewAPI(docService, chatService, quizService, flashcardService, summaryService, progressService, healthChecks)
+	// A nil *LangfuseClient must not become a non-nil interface, or feedback would call into it.
+	var scorer services.FeedbackScorer
+	if lf := observability.NewLangfuseClient(telemetryCfg); lf != nil {
+		scorer = lf
+	}
+	feedbackService := services.NewFeedbackService(db, scorer)
+	apiServer := api.NewAPI(docService, chatService, quizService, flashcardService, summaryService, progressService, feedbackService, healthChecks)
 
 	server := &http.Server{
 		Addr:              fmt.Sprintf(":%s", cfg.APIPort),

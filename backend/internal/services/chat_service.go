@@ -138,6 +138,9 @@ func (s *ChatService) GetConversation(ctx context.Context, userID, convID string
 	if err != nil {
 		return nil, err
 	}
+	if err := attachFeedback(ctx, s.db, conv.Messages); err != nil {
+		return nil, err
+	}
 	conv.Documents = []models.Document{}
 	err = s.db.WithContext(ctx).
 		Joins("join conversation_documents cd on cd.document_id = documents.id").
@@ -300,6 +303,9 @@ func (s *ChatService) SendMessage(ctx context.Context, userID, convID, content s
 		CitationsJSON:  string(citationsJSON),
 		MetadataJSON:   reply.Metadata,
 		CreatedAt:      time.Now(),
+	}
+	if id := observability.TraceID(ctx); id != "" {
+		assistantMsg.TraceID = &id // lets a later thumbs up/down be attached to this trace in Langfuse
 	}
 	if err := s.db.WithContext(ctx).Create(assistantMsg).Error; err != nil {
 		return nil, fmt.Errorf("saving assistant message: %w", err)

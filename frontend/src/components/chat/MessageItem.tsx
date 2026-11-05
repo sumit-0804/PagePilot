@@ -6,6 +6,7 @@ import { CitationChip } from '@/components/chat/CitationChip'
 import { sourceName } from '@/lib/citations'
 import { QuizBlock } from '@/components/quiz/QuizBlock'
 import { FlashcardDeck } from '@/components/flashcards/FlashcardDeck'
+import { RatingBar } from '@/components/chat/RatingBar'
 import { parseCitations, parseMetadata } from '@/services/api'
 import type { Citation, Message } from '@/types'
 
@@ -67,6 +68,7 @@ export const MessageItem = memo(function MessageItem({ message }: { message: Mes
         >
           <p className="reading">{message.content}</p>
           {meta.quiz_session_id && <QuizBlock sessionId={meta.quiz_session_id} />}
+          <RatingBar messageId={message.id} initial={message.feedback} />
         </motion.div>
       )
     case 'flashcards':
@@ -78,6 +80,7 @@ export const MessageItem = memo(function MessageItem({ message }: { message: Mes
         >
           <p className="reading">{message.content}</p>
           {meta.flashcard_set_id && <FlashcardDeck setId={meta.flashcard_set_id} />}
+          <RatingBar messageId={message.id} initial={message.feedback} />
         </motion.div>
       )
     default:
@@ -90,6 +93,7 @@ export const MessageItem = memo(function MessageItem({ message }: { message: Mes
         >
           <Markdown text={message.content} citations={citations} />
           <Sources citations={citations} />
+          <RatingBar messageId={message.id} initial={message.feedback} />
         </motion.div>
       )
   }

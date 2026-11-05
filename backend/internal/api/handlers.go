@@ -16,6 +16,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/pagepilot/backend/internal/auth"
 	"github.com/pagepilot/backend/internal/embeddings"
+	"github.com/pagepilot/backend/internal/models"
 	"github.com/pagepilot/backend/internal/observability"
 	"github.com/pagepilot/backend/internal/services"
 )
@@ -29,6 +30,7 @@ type API struct {
 	flashcardService *services.FlashcardService
 	summaryService   *services.SummaryService
 	progressService  *services.ProgressService
+	feedbackService  *services.FeedbackService
 	healthChecks     map[string]func(ctx context.Context) error
 }
 
@@ -39,6 +41,7 @@ func NewAPI(
 	fcSvc *services.FlashcardService,
 	sumSvc *services.SummaryService,
 	progressSvc *services.ProgressService,
+	feedbackSvc *services.FeedbackService,
 	healthChecks map[string]func(ctx context.Context) error,
 ) *API {
 	return &API{
@@ -48,8 +51,32 @@ func NewAPI(
 		flashcardService: fcSvc,
 		summaryService:   sumSvc,
 		progressService:  progressSvc,
+		feedbackService:  feedbackSvc,
 		healthChecks:     healthChecks,
 	}
+}
+
+// Feedback
+
+func (a *API) RateMessageHandler(w http.ResponseWriter, r *http.Request) {
+	var body models.Feedback
+	if !decodeJSON(w, r, &body) {
+		return
+	}
+	fb, err := a.feedbackService.Rate(r.Context(), auth.UserID(r.Context()), chi.URLParam(r, "id"), body)
+	if err != nil {
+		a.fail(w, r, err)
+		return
+	}
+	respondJSON(w, http.StatusOK, fb)
+}
+
+func (a *API) ClearMessageRatingHandler(w http.ResponseWriter, r *http.Request) {
+	if err := a.feedbackService.Clear(r.Context(), auth.UserID(r.Context()), chi.URLParam(r, "id")); err != nil {
+		a.fail(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // LiveHandler says the process is up and serving. It checks nothing else, so a database blip
