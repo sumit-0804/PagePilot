@@ -30,7 +30,9 @@ func SetupRouter(api *API, verifier *auth.Verifier, allowedOrigins []string) htt
 		MaxAge:         300,
 	}))
 
-	r.Get("/health", api.HealthHandler)
+	r.Get("/health/live", api.LiveHandler)
+	r.Get("/health/ready", api.HealthHandler)
+	r.Get("/health", api.HealthHandler) // kept for existing monitors; same as /health/ready
 
 	r.Route("/api", func(r chi.Router) {
 		r.Get("/health", api.HealthHandler)

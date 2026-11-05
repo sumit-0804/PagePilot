@@ -7,7 +7,9 @@ services:
     region: singapore # closest to the Supabase database in ap-south-1
     dockerContext: ./backend
     dockerfilePath: ./backend/Dockerfile
-    healthCheckPath: /health
+    # Liveness only: startup already fails without the database and storage, and a readiness check
+    # here would restart the instance during a short Supabase outage. /health/ready is for monitors.
+    healthCheckPath: /health/live
     autoDeployTrigger: commit
     buildFilter:
       paths:

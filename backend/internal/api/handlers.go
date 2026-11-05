@@ -52,7 +52,14 @@ func NewAPI(
 	}
 }
 
-// HealthHandler reports each dependency; 503 if any is down.
+// LiveHandler says the process is up and serving. It checks nothing else, so a database blip
+// doesn't make the host restart an instance that would recover on its own.
+func (a *API) LiveHandler(w http.ResponseWriter, _ *http.Request) {
+	respondJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// HealthHandler (readiness) checks the database and storage; 503 if any is down.
+// Langfuse and Sentry are never checked: the API works without them.
 func (a *API) HealthHandler(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
@@ -61,7 +68,9 @@ func (a *API) HealthHandler(w http.ResponseWriter, r *http.Request) {
 	checks := make(map[string]string, len(a.healthChecks))
 	for name, check := range a.healthChecks {
 		if err := check(ctx); err != nil {
-			checks[name] = "error: " + err.Error()
+			// The endpoint is public, so details (hosts, connection errors) go to the log only.
+			log.Printf("health: %s check failed: %v", name, err)
+			checks[name] = "error"
 			status = http.StatusServiceUnavailable
 		} else {
 			checks[name] = "ok"
