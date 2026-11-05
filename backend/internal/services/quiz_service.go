@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/pagepilot/backend/internal/models"
+	"github.com/pagepilot/backend/internal/observability"
 	"github.com/pagepilot/backend/internal/rag"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -91,7 +92,10 @@ type QuizSessionResponse struct {
 }
 
 // GenerateQuiz builds a quiz from a document, or from general knowledge on a topic when DocumentID is empty.
-func (s *QuizService) GenerateQuiz(ctx context.Context, userID string, req GenerateQuizRequest) (*QuizSessionResponse, error) {
+func (s *QuizService) GenerateQuiz(ctx context.Context, userID string, req GenerateQuizRequest) (_ *QuizSessionResponse, err error) {
+	ctx, span := startStudySpan(ctx, "quiz.generate", userID, req.DocumentID)
+	defer func() { observability.End(span, err) }()
+
 	if req.NumQuestions <= 0 || req.NumQuestions > 20 {
 		req.NumQuestions = 5
 	}

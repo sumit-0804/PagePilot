@@ -16,11 +16,14 @@ import (
 	"github.com/pagepilot/backend/internal/embeddings"
 	"github.com/pagepilot/backend/internal/extract"
 	"github.com/pagepilot/backend/internal/models"
+	"github.com/pagepilot/backend/internal/observability"
 	"github.com/pagepilot/backend/internal/ocr"
 	"github.com/pagepilot/backend/internal/pdf"
 	"github.com/pagepilot/backend/internal/storage"
 	"github.com/pagepilot/backend/internal/vectorstore"
 	"github.com/pgvector/pgvector-go"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 	"gorm.io/gorm"
 )
 
@@ -122,7 +125,7 @@ func (s *DocumentService) Upload(ctx context.Context, userID, filename string, d
 		return nil, fmt.Errorf("saving document record: %w", err)
 	}
 
-	go s.process(doc.ID)
+	go s.process(doc.ID, trace.SpanContextFromContext(ctx))
 	return doc, nil
 }
 
@@ -137,21 +140,30 @@ func (s *DocumentService) ResumeUnfinished(ctx context.Context) error {
 	}
 	for _, id := range ids {
 		log.Printf("[Doc %s] resuming unfinished processing", id)
-		go s.process(id)
+		go s.process(id, trace.SpanContext{})
 	}
 	return nil
 }
 
-func (s *DocumentService) process(docID string) {
+// process runs the pipeline in the background as its own trace, linked to the upload request (`from`).
+func (s *DocumentService) process(docID string, from trace.SpanContext) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Hour)
 	defer cancel()
+	ctx, span := observability.StartRoot(ctx, from, "document.process", observability.TypeChain,
+		observability.AttrDocumentID.String(docID),
+	)
+	var err error
+	defer func() { observability.End(span, err) }()
 
 	var doc models.Document
-	if err := s.db.WithContext(ctx).First(&doc, "id = ?", docID).Error; err != nil {
+	if err = s.db.WithContext(ctx).First(&doc, "id = ?", docID).Error; err != nil {
 		log.Printf("[Doc %s] loading for processing: %v", docID, err)
 		return
 	}
-	if err := s.runPipeline(ctx, &doc); err != nil {
+	user := observability.AttrUserID.String(observability.UserRef(doc.UserID))
+	span.SetAttributes(user, observability.AttrDocumentFormat.String(doc.Format))
+	ctx = observability.WithTraceAttributes(ctx, user)
+	if err = s.runPipeline(ctx, &doc); err != nil {
 		log.Printf("[Doc %s] processing failed: %v", docID, err)
 		if uerr := s.update(ctx, docID, map[string]any{"status": models.StatusFailed, "error_message": failureMessage(err)}); uerr != nil {
 			log.Printf("[Doc %s] recording failure: %v", docID, uerr)
@@ -234,7 +246,13 @@ func (s *DocumentService) runPipeline(ctx context.Context, doc *models.Document)
 			texts[i] = chunks[start+i].ChunkText
 		}
 		batchStarted := time.Now()
-		vecs, err := s.embedder.EmbedDocuments(ctx, texts)
+		embedCtx, span := observability.Start(ctx, "embed_documents", observability.TypeEmbedding,
+			observability.AttrGenAIOperation.String("embeddings"),
+			observability.AttrGenAIRequestModel.String(s.embedder.Model()),
+			observability.AttrBatchSize.Int(len(texts)),
+		)
+		vecs, err := s.embedder.EmbedDocuments(embedCtx, texts)
+		observability.End(span, err)
 		if err != nil {
 			return failWith("Indexing this file failed. Try uploading it again in a few minutes.", err)
 		}
@@ -256,6 +274,10 @@ func (s *DocumentService) runPipeline(ctx context.Context, doc *models.Document)
 	if err := s.update(ctx, doc.ID, map[string]any{"status": models.StatusReady}); err != nil {
 		return err
 	}
+	trace.SpanFromContext(ctx).SetAttributes(
+		observability.AttrPageCount.Int(len(pages)),
+		observability.AttrChunkCount.Int(len(chunks)),
+	)
 	log.Printf("[Doc %s] READY (%d sections, %d chunks)", doc.ID, len(pages), len(chunks))
 	return nil
 }
@@ -370,7 +392,13 @@ func (s *DocumentService) readScannedPages(ctx context.Context, docID string, da
 		numbers[i] = pages[idx].PageNumber
 	}
 	started := time.Now()
-	texts, err := s.ocr.Recognize(ctx, data, numbers)
+	ocrCtx, span := observability.Start(ctx, "ocr "+s.ocr.Model(), observability.TypeGeneration,
+		observability.AttrGenAIOperation.String("generate_content"),
+		observability.AttrGenAIRequestModel.String(s.ocr.Model()),
+		observability.AttrPageCount.Int(len(numbers)),
+	)
+	texts, err := s.ocr.Recognize(ocrCtx, data, numbers)
+	observability.End(span, err)
 	if err != nil {
 		return 0, failWith("Reading the scanned pages of this PDF failed. Try uploading it again in a few minutes.", err)
 	}
@@ -386,6 +414,9 @@ func (s *DocumentService) readScannedPages(ctx context.Context, docID string, da
 }
 
 func (s *DocumentService) update(ctx context.Context, docID string, fields map[string]any) error {
+	if status, ok := fields["status"].(string); ok {
+		trace.SpanFromContext(ctx).AddEvent("status", trace.WithAttributes(attribute.String("status", status)))
+	}
 	fields["updated_at"] = time.Now()
 	if err := s.db.WithContext(ctx).Model(&models.Document{}).Where("id = ?", docID).Updates(fields).Error; err != nil {
 		return fmt.Errorf("updating document: %w", err)

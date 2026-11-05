@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/pagepilot/backend/internal/models"
+	"github.com/pagepilot/backend/internal/observability"
 	"github.com/pagepilot/backend/internal/rag"
 	"gorm.io/gorm"
 )
@@ -207,7 +208,21 @@ type SendOptions struct {
 
 // SendMessage handles one chat message: the responder answers it (streaming tokens to streamWriter
 // when given), searching attached documents or the web, or creates a quiz, flashcards or a summary.
-func (s *ChatService) SendMessage(ctx context.Context, userID, convID, content string, opts SendOptions, streamWriter func(token string) error) (*SendMessageResult, error) {
+func (s *ChatService) SendMessage(ctx context.Context, userID, convID, content string, opts SendOptions, streamWriter func(token string) error) (_ *SendMessageResult, err error) {
+	userKind := "account"
+	if opts.Guest {
+		userKind = "guest"
+	}
+	ctx = observability.WithTraceAttributes(ctx,
+		observability.AttrTraceName.String("chat"),
+		observability.AttrTraceTags.StringSlice([]string{"chat", userKind}),
+		observability.AttrSessionID.String(convID),
+		observability.AttrUserID.String(observability.UserRef(userID)),
+	)
+	ctx, span := observability.Start(ctx, "chat.turn", observability.TypeAgent, observability.AttrGuest.Bool(opts.Guest))
+	defer func() { observability.End(span, err) }()
+	observability.SetContent(span, observability.AttrInput, content)
+
 	if opts.Style != "" {
 		if _, ok := rag.ExplanationStyles[opts.Style]; !ok {
 			return nil, fmt.Errorf("%w: unknown style %q", ErrInvalidInput, opts.Style)
@@ -256,6 +271,12 @@ func (s *ChatService) SendMessage(ctx context.Context, userID, convID, content s
 	if reply.Citations == nil {
 		reply.Citations = []models.Citation{}
 	}
+	span.SetAttributes(
+		observability.AttrDocumentCount.Int(len(conv.Documents)),
+		observability.AttrReplyType.String(reply.Type),
+		observability.AttrCitationCount.Int(len(reply.Citations)),
+	)
+	observability.SetContent(span, observability.AttrOutput, reply.Content)
 	if reply.Type == "chat" && !opts.Guest && reply.Metadata == "" {
 		// Follow-ups are a nice-to-have: on failure the UI falls back to its generic chips.
 		if followUps, err := suggestFollowUps(ctx, s.llm, content, reply.Content); err != nil {

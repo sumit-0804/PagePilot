@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/pagepilot/backend/internal/observability"
 	storage_go "github.com/supabase-community/storage-go"
 )
 
@@ -43,7 +44,11 @@ func (s *SupabaseStore) Check(_ context.Context) error {
 	return nil
 }
 
-func (s *SupabaseStore) Save(_ context.Context, path string, data []byte, contentType string) error {
+// Spans leave out the path, which contains the user id.
+func (s *SupabaseStore) Save(ctx context.Context, path string, data []byte, contentType string) (err error) {
+	_, span := observability.Start(ctx, "storage.upload", observability.TypeSpan, observability.AttrStorageBytes.Int(len(data)))
+	defer func() { observability.End(span, err) }()
+
 	upsert := false
 	if _, err := s.client.UploadFile(s.bucket, path, bytes.NewReader(data), storage_go.FileOptions{
 		ContentType: &contentType,
@@ -54,11 +59,15 @@ func (s *SupabaseStore) Save(_ context.Context, path string, data []byte, conten
 	return nil
 }
 
-func (s *SupabaseStore) Read(_ context.Context, path string) ([]byte, error) {
+func (s *SupabaseStore) Read(ctx context.Context, path string) (_ []byte, err error) {
+	_, span := observability.Start(ctx, "storage.download", observability.TypeSpan)
+	defer func() { observability.End(span, err) }()
+
 	data, err := s.client.DownloadFile(s.bucket, path)
 	if err != nil {
 		return nil, fmt.Errorf("downloading %s: %w", path, err)
 	}
+	span.SetAttributes(observability.AttrStorageBytes.Int(len(data)))
 	return data, nil
 }
 

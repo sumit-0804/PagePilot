@@ -7,10 +7,18 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/pagepilot/backend/internal/models"
+	"github.com/pagepilot/backend/internal/observability"
 	"github.com/pagepilot/backend/internal/rag"
 	"github.com/pagepilot/backend/internal/vectorstore"
+	"go.opentelemetry.io/otel/trace"
 	"gorm.io/gorm"
 )
+
+// startStudySpan traces one quiz, flashcard or summary generation.
+func startStudySpan(ctx context.Context, name, userID, docID string) (context.Context, trace.Span) {
+	ctx = observability.WithTraceAttributes(ctx, observability.AttrUserID.String(observability.UserRef(userID)))
+	return observability.Start(ctx, name, observability.TypeChain, observability.AttrDocumentID.String(docID))
+}
 
 // loadExcerpts picks the chunks a quiz, flashcard set or summary is grounded in: the most relevant
 // chunks for a topic, or an even spread across the whole document when there is no topic.

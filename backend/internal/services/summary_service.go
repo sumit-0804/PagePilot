@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/pagepilot/backend/internal/models"
+	"github.com/pagepilot/backend/internal/observability"
 	"github.com/pagepilot/backend/internal/rag"
 	"github.com/pagepilot/backend/internal/vectorstore"
 	"gorm.io/gorm"
@@ -60,7 +61,10 @@ var summaryInstructions = map[string]string{
 	"exam":        "Write exam preparation notes: must-know points, common mistakes and likely exam questions with short answers.",
 }
 
-func (s *SummaryService) GenerateSummary(ctx context.Context, userID string, req GenerateSummaryRequest) (*SummaryResponse, error) {
+func (s *SummaryService) GenerateSummary(ctx context.Context, userID string, req GenerateSummaryRequest) (_ *SummaryResponse, err error) {
+	ctx, span := startStudySpan(ctx, "summary.generate", userID, req.DocumentID)
+	defer func() { observability.End(span, err) }()
+
 	if _, err := s.docs.GetReady(ctx, userID, req.DocumentID); err != nil {
 		return nil, err
 	}
@@ -77,7 +81,6 @@ func (s *SummaryService) GenerateSummary(ctx context.Context, userID string, req
 	}
 
 	var chunks []vectorstore.SearchResult
-	var err error
 	if req.Topic != "" {
 		chunks, err = s.ragEngine.Retrieve(ctx, req.Topic, userID, req.DocumentID, 25)
 	} else {

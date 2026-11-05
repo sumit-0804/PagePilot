@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"github.com/pagepilot/backend/internal/config"
+	"github.com/pagepilot/backend/internal/observability"
+	"go.opentelemetry.io/otel/trace"
 )
 
 type ChatMessage struct {
@@ -28,10 +30,21 @@ type chatCompletionRequest struct {
 	Stream           bool            `json:"stream"`
 	IncludeReasoning *bool           `json:"include_reasoning,omitempty"`
 	ResponseFormat   *responseFormat `json:"response_format,omitempty"`
+	StreamOptions    *streamOptions  `json:"stream_options,omitempty"`
 }
 
 type responseFormat struct {
 	Type string `json:"type"`
+}
+
+// streamOptions asks for token usage in the final stream chunk.
+type streamOptions struct {
+	IncludeUsage bool `json:"include_usage"`
+}
+
+type tokenUsage struct {
+	PromptTokens     int `json:"prompt_tokens"`
+	CompletionTokens int `json:"completion_tokens"`
 }
 
 type chatCompletionResponse struct {
@@ -43,9 +56,24 @@ type chatCompletionResponse struct {
 			Content string `json:"content"`
 		} `json:"delta"`
 	} `json:"choices"`
+	Usage *tokenUsage `json:"usage,omitempty"`
+	// Groq also reports streaming usage here.
+	XGroq *struct {
+		Usage *tokenUsage `json:"usage,omitempty"`
+	} `json:"x_groq,omitempty"`
 	Error *struct {
 		Message string `json:"message"`
 	} `json:"error,omitempty"`
+}
+
+func (r *chatCompletionResponse) usage() *tokenUsage {
+	if r.Usage != nil {
+		return r.Usage
+	}
+	if r.XGroq != nil {
+		return r.XGroq.Usage
+	}
+	return nil
 }
 
 type LLMClient interface {
@@ -80,7 +108,11 @@ func (g *GroqClient) GenerateJSON(ctx context.Context, messages []ChatMessage) (
 	return g.complete(ctx, messages, &responseFormat{Type: "json_object"})
 }
 
-func (g *GroqClient) complete(ctx context.Context, messages []ChatMessage, format *responseFormat) (string, error) {
+func (g *GroqClient) complete(ctx context.Context, messages []ChatMessage, format *responseFormat) (answer string, err error) {
+	ctx, span := g.startGeneration(ctx, messages, false, format)
+	var usage *tokenUsage
+	defer func() { endGeneration(span, usage, answer, err) }()
+
 	ctx, cancel := context.WithTimeout(ctx, generateTimeout)
 	defer cancel()
 
@@ -101,24 +133,32 @@ func (g *GroqClient) complete(ctx context.Context, messages []ChatMessage, forma
 	if parsed.Error != nil && parsed.Error.Message != "" {
 		return "", fmt.Errorf("groq error: %s", parsed.Error.Message)
 	}
+	usage = parsed.usage()
 	if len(parsed.Choices) == 0 {
 		return "", errors.New("groq returned no choices")
 	}
 	return parsed.Choices[0].Message.Content, nil
 }
 
-func (g *GroqClient) Stream(ctx context.Context, messages []ChatMessage, onChunk func(token string) error) (string, error) {
+func (g *GroqClient) Stream(ctx context.Context, messages []ChatMessage, onChunk func(token string) error) (_ string, err error) {
+	ctx, span := g.startGeneration(ctx, messages, true, nil)
+	var full strings.Builder
+	var usage *tokenUsage
+	defer func() { endGeneration(span, usage, full.String(), err) }()
+
 	ctx, cancel := context.WithTimeout(ctx, streamTimeout)
 	defer cancel()
 
-	resp, err := g.send(ctx, chatCompletionRequest{Model: g.model, Messages: messages, Temperature: 0.2, Stream: true})
+	resp, err := g.send(ctx, chatCompletionRequest{
+		Model: g.model, Messages: messages, Temperature: 0.2, Stream: true,
+		StreamOptions: &streamOptions{IncludeUsage: true},
+	})
 	if err != nil {
 		return "", err
 	}
 	defer resp.Body.Close()
 
 	reader := bufio.NewReader(resp.Body)
-	var full strings.Builder
 	for {
 		line, err := reader.ReadBytes('\n')
 		if err != nil {
@@ -144,6 +184,9 @@ func (g *GroqClient) Stream(ctx context.Context, messages []ChatMessage, onChunk
 		if chunk.Error != nil && chunk.Error.Message != "" {
 			return full.String(), fmt.Errorf("groq stream error: %s", chunk.Error.Message)
 		}
+		if u := chunk.usage(); u != nil {
+			usage = u
+		}
 		if len(chunk.Choices) == 0 || chunk.Choices[0].Delta.Content == "" {
 			continue
 		}
@@ -154,6 +197,39 @@ func (g *GroqClient) Stream(ctx context.Context, messages []ChatMessage, onChunk
 		}
 	}
 	return full.String(), nil
+}
+
+func (g *GroqClient) startGeneration(ctx context.Context, messages []ChatMessage, streaming bool, format *responseFormat) (context.Context, trace.Span) {
+	responseFormat := "text"
+	if format != nil {
+		responseFormat = format.Type
+	}
+	ctx, span := observability.Start(ctx, "chat "+g.model, observability.TypeGeneration,
+		observability.AttrGenAIOperation.String("chat"),
+		observability.AttrGenAISystem.String("groq"),
+		observability.AttrGenAIRequestModel.String(g.model),
+		observability.AttrStreaming.Bool(streaming),
+		observability.AttrResponseFormat.String(responseFormat),
+	)
+	if observability.CaptureContent() && len(messages) > 0 {
+		observability.SetContent(span, observability.AttrInput, messages[len(messages)-1].Content)
+	}
+	return ctx, span
+}
+
+// endGeneration records token usage only when Groq reported it; it never estimates.
+func endGeneration(span trace.Span, usage *tokenUsage, output string, err error) {
+	if usage != nil {
+		span.SetAttributes(
+			observability.AttrGenAIInputTokens.Int(usage.PromptTokens),
+			observability.AttrGenAIOutputTokens.Int(usage.CompletionTokens),
+			observability.AttrUsageAvailable.Bool(true),
+		)
+	} else {
+		span.SetAttributes(observability.AttrUsageAvailable.Bool(false))
+	}
+	observability.SetContent(span, observability.AttrOutput, output)
+	observability.End(span, err)
 }
 
 // send posts a chat completion request and returns the response if it succeeded.

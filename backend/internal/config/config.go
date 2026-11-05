@@ -48,6 +48,14 @@ type Config struct {
 	WebSearchProvider   string
 	TavilyAPIKey        string
 	WebSearchMaxResults int
+
+	// Observability; all optional.
+	Environment       string // e.g. production, staging, development
+	Version           string // git commit or release name
+	LangfusePublicKey string
+	LangfuseSecretKey string
+	LangfuseBaseURL   string
+	TraceSampleRatio  float64 // share of traces kept, 0 < r <= 1
 }
 
 // Load reads .env (cwd or repo root) and validates required settings.
@@ -76,35 +84,52 @@ func Load() (*Config, error) {
 	}
 
 	cfg := &Config{
-		APIPort:            getEnv("PORT", getEnv("API_PORT", "8080")), // hosts like Render set PORT
-		FrontendOrigins:    splitList(getEnv("FRONTEND_URL", "http://localhost:5173")),
-		GroqAPIKey:         getEnv("GROQ_API_KEY", ""),
-		GroqModel:          getEnv("GROQ_MODEL", "openai/gpt-oss-120b"),
-		DatabaseURL:        getEnv("DATABASE_URL", ""),
-		SupabaseURL:        strings.TrimRight(getEnv("SUPABASE_URL", ""), "/"),
-		SupabaseSecretKey:  getEnv("SUPABASE_SECRET_KEY", ""),
-		SupabaseJWTSecret:  getEnv("SUPABASE_JWT_SECRET", ""),
-		StorageBucket:      getEnv("STORAGE_BUCKET", "pdfs"),
-		EmbeddingProvider:  strings.ToLower(getEnv("EMBEDDING_PROVIDER", "gemini")),
-		EmbeddingModel:     getEnv("EMBEDDING_MODEL", "gemini-embedding-2"),
-		GeminiAPIKey:       getEnv("GEMINI_API_KEY", ""),
-		EmbeddingAPIKey:    getEnv("EMBEDDING_API_KEY", ""),
-		EmbeddingBaseURL:   getEnv("EMBEDDING_BASE_URL", ""),
-		EmbeddingDim:       intVar("EMBEDDING_DIM", 1536),
-		EmbeddingBatchSize: intVar("EMBEDDING_BATCH_SIZE", 100),
-		EmbeddingRPM:       intVar("EMBEDDING_RPM", 0),
-		EmbeddingTPM:       intVar("EMBEDDING_TPM", 0),
-		EmbeddingRPD:       intVar("EMBEDDING_RPD", 0),
-		OCRProvider:        strings.ToLower(getEnv("OCR_PROVIDER", "none")),
-		OCRModel:           getEnv("OCR_MODEL", ""),
-		OCRRPM:             intVar("OCR_RPM", 0),
-		OCRTPM:             intVar("OCR_TPM", 0),
-		OCRRPD:             intVar("OCR_RPD", 0),
-		OCRPagesPerCall:    intVar("OCR_PAGES_PER_CALL", 10),
-		OCRMaxPages:        intVar("OCR_MAX_PAGES", 100),
+		APIPort:             getEnv("PORT", getEnv("API_PORT", "8080")), // hosts like Render set PORT
+		FrontendOrigins:     splitList(getEnv("FRONTEND_URL", "http://localhost:5173")),
+		GroqAPIKey:          getEnv("GROQ_API_KEY", ""),
+		GroqModel:           getEnv("GROQ_MODEL", "openai/gpt-oss-120b"),
+		DatabaseURL:         getEnv("DATABASE_URL", ""),
+		SupabaseURL:         strings.TrimRight(getEnv("SUPABASE_URL", ""), "/"),
+		SupabaseSecretKey:   getEnv("SUPABASE_SECRET_KEY", ""),
+		SupabaseJWTSecret:   getEnv("SUPABASE_JWT_SECRET", ""),
+		StorageBucket:       getEnv("STORAGE_BUCKET", "pdfs"),
+		EmbeddingProvider:   strings.ToLower(getEnv("EMBEDDING_PROVIDER", "gemini")),
+		EmbeddingModel:      getEnv("EMBEDDING_MODEL", "gemini-embedding-2"),
+		GeminiAPIKey:        getEnv("GEMINI_API_KEY", ""),
+		EmbeddingAPIKey:     getEnv("EMBEDDING_API_KEY", ""),
+		EmbeddingBaseURL:    getEnv("EMBEDDING_BASE_URL", ""),
+		EmbeddingDim:        intVar("EMBEDDING_DIM", 1536),
+		EmbeddingBatchSize:  intVar("EMBEDDING_BATCH_SIZE", 100),
+		EmbeddingRPM:        intVar("EMBEDDING_RPM", 0),
+		EmbeddingTPM:        intVar("EMBEDDING_TPM", 0),
+		EmbeddingRPD:        intVar("EMBEDDING_RPD", 0),
+		OCRProvider:         strings.ToLower(getEnv("OCR_PROVIDER", "none")),
+		OCRModel:            getEnv("OCR_MODEL", ""),
+		OCRRPM:              intVar("OCR_RPM", 0),
+		OCRTPM:              intVar("OCR_TPM", 0),
+		OCRRPD:              intVar("OCR_RPD", 0),
+		OCRPagesPerCall:     intVar("OCR_PAGES_PER_CALL", 10),
+		OCRMaxPages:         intVar("OCR_MAX_PAGES", 100),
 		WebSearchProvider:   strings.ToLower(getEnv("WEB_SEARCH_PROVIDER", "none")),
 		TavilyAPIKey:        getEnv("TAVILY_API_KEY", ""),
 		WebSearchMaxResults: intVar("WEB_SEARCH_MAX_RESULTS", 5),
+		Environment:         getEnv("DEPLOYMENT_ENVIRONMENT", "development"),
+		Version:             getEnv("APP_VERSION", getEnv("RENDER_GIT_COMMIT", "")), // Render sets RENDER_GIT_COMMIT
+		LangfusePublicKey:   getEnv("LANGFUSE_PUBLIC_KEY", ""),
+		LangfuseSecretKey:   getEnv("LANGFUSE_SECRET_KEY", ""),
+		LangfuseBaseURL:     getEnv("LANGFUSE_BASE_URL", "https://cloud.langfuse.com"),
+		TraceSampleRatio:    1,
+	}
+	if raw := getEnv("OTEL_TRACES_SAMPLER_ARG", ""); raw != "" {
+		r, err := strconv.ParseFloat(raw, 64)
+		if err != nil || r <= 0 || r > 1 {
+			errs = append(errs, fmt.Errorf("OTEL_TRACES_SAMPLER_ARG must be a number in (0, 1], got %q", raw))
+		} else {
+			cfg.TraceSampleRatio = r
+		}
+	}
+	if (cfg.LangfusePublicKey == "") != (cfg.LangfuseSecretKey == "") {
+		errs = append(errs, errors.New("set both LANGFUSE_PUBLIC_KEY and LANGFUSE_SECRET_KEY, or neither"))
 	}
 
 	required := map[string]string{

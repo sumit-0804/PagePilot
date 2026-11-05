@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/pagepilot/backend/internal/models"
+	"github.com/pagepilot/backend/internal/observability"
 	"github.com/pagepilot/backend/internal/rag"
 	"gorm.io/gorm"
 )
@@ -34,7 +35,10 @@ type GenerateFlashcardsRequest struct {
 var validCardStatuses = map[string]bool{"new": true, "known": true, "practice": true}
 
 // GenerateFlashcards builds cards from a document, or from general knowledge on a topic when DocumentID is empty.
-func (s *FlashcardService) GenerateFlashcards(ctx context.Context, userID string, req GenerateFlashcardsRequest) (*models.FlashcardSet, error) {
+func (s *FlashcardService) GenerateFlashcards(ctx context.Context, userID string, req GenerateFlashcardsRequest) (_ *models.FlashcardSet, err error) {
+	ctx, span := startStudySpan(ctx, "flashcards.generate", userID, req.DocumentID)
+	defer func() { observability.End(span, err) }()
+
 	if req.Count <= 0 || req.Count > 30 {
 		req.Count = 6
 	}

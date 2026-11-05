@@ -17,6 +17,7 @@ import (
 	"github.com/pagepilot/backend/internal/config"
 	"github.com/pagepilot/backend/internal/database"
 	"github.com/pagepilot/backend/internal/embeddings"
+	"github.com/pagepilot/backend/internal/observability"
 	"github.com/pagepilot/backend/internal/ocr"
 	"github.com/pagepilot/backend/internal/rag"
 	"github.com/pagepilot/backend/internal/services"
@@ -38,6 +39,24 @@ func run() error {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	telemetryCfg := observability.Config{
+		Environment:       cfg.Environment,
+		Version:           cfg.Version,
+		LangfusePublicKey: cfg.LangfusePublicKey,
+		LangfuseSecretKey: cfg.LangfuseSecretKey,
+		LangfuseBaseURL:   cfg.LangfuseBaseURL,
+		SampleRatio:       cfg.TraceSampleRatio,
+	}
+	shutdownTracing, err := observability.Setup(ctx, telemetryCfg)
+	if err != nil {
+		// Tracing is optional; the API runs without it.
+		log.Printf("Tracing: off (%v)", err)
+	} else if telemetryCfg.Enabled() {
+		log.Printf("Tracing: on (environment %s, sampling %.2f, prompt capture %v)", cfg.Environment, cfg.TraceSampleRatio, observability.CaptureContent())
+	} else {
+		log.Println("Tracing: off (no LANGFUSE_* or OTEL_EXPORTER_OTLP_* settings)")
+	}
 
 	db, err := database.Connect(cfg.DatabaseURL)
 	if err != nil {
@@ -146,5 +165,10 @@ func run() error {
 	log.Println("Shutting down...")
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	return server.Shutdown(shutdownCtx)
+	err = server.Shutdown(shutdownCtx)
+	// Flush queued spans after in-flight requests finish, within the same deadline.
+	if terr := shutdownTracing(shutdownCtx); terr != nil {
+		log.Printf("Flushing traces: %v", terr)
+	}
+	return err
 }

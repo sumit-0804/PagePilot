@@ -9,7 +9,9 @@ import (
 
 	"github.com/pagepilot/backend/internal/embeddings"
 	"github.com/pagepilot/backend/internal/models"
+	"github.com/pagepilot/backend/internal/observability"
 	"github.com/pagepilot/backend/internal/vectorstore"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 type RAGResult struct {
@@ -81,16 +83,52 @@ func (e *Engine) Retrieve(ctx context.Context, query, userID, docID string, limi
 }
 
 // RetrieveMany searches several of one user's documents at once.
-func (e *Engine) RetrieveMany(ctx context.Context, query, userID string, docIDs []string, limit int) ([]vectorstore.SearchResult, error) {
-	queryVec, err := e.embedder.EmbedQuery(ctx, query)
+func (e *Engine) RetrieveMany(ctx context.Context, query, userID string, docIDs []string, limit int) (results []vectorstore.SearchResult, err error) {
+	ctx, span := observability.Start(ctx, "rag.retrieve", observability.TypeRetriever,
+		observability.AttrTopK.Int(limit),
+		observability.AttrDocumentCount.Int(len(docIDs)),
+		observability.AttrQueryChars.Int(len([]rune(query))),
+	)
+	defer func() { observability.End(span, err) }()
+	observability.SetContent(span, observability.AttrInput, query)
+
+	queryVec, err := e.embedQuery(ctx, query)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate query embedding: %w", err)
 	}
-	results, err := e.vectorStore.Search(ctx, queryVec, userID, docIDs, limit)
+	results, err = e.search(ctx, queryVec, userID, docIDs, limit)
 	if err != nil {
 		return nil, fmt.Errorf("vector search failed: %w", err)
 	}
+
+	span.SetAttributes(observability.AttrChunksReturned.Int(len(results)))
+	if len(results) > 0 {
+		// Results come back best first.
+		span.SetAttributes(
+			observability.AttrTopScore.Float64(float64(results[0].Score)),
+			observability.AttrMinScore.Float64(float64(results[len(results)-1].Score)),
+		)
+	}
 	return results, nil
+}
+
+func (e *Engine) embedQuery(ctx context.Context, query string) (_ []float32, err error) {
+	ctx, span := observability.Start(ctx, "embed_query", observability.TypeEmbedding,
+		observability.AttrGenAIOperation.String("embeddings"),
+		observability.AttrGenAIRequestModel.String(e.embedder.Model()),
+	)
+	defer func() { observability.End(span, err) }()
+	return e.embedder.EmbedQuery(ctx, query)
+}
+
+func (e *Engine) search(ctx context.Context, vec []float32, userID string, docIDs []string, limit int) (_ []vectorstore.SearchResult, err error) {
+	ctx, span := observability.Start(ctx, "vector_search", observability.TypeSpan,
+		attribute.String("db.system.name", "postgresql"),
+		attribute.String("db.operation.name", "select"),
+		attribute.String("db.collection.name", "document_chunks"),
+	)
+	defer func() { observability.End(span, err) }()
+	return e.vectorStore.Search(ctx, vec, userID, docIDs, limit)
 }
 
 // Query performs end-to-end grounded RAG retrieval and answer generation

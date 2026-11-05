@@ -7,6 +7,7 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/cors"
 	"github.com/pagepilot/backend/internal/auth"
+	"github.com/pagepilot/backend/internal/observability"
 )
 
 func SetupRouter(api *API, verifier *auth.Verifier, allowedOrigins []string) http.Handler {
@@ -22,6 +23,7 @@ func SetupRouter(api *API, verifier *auth.Verifier, allowedOrigins []string) htt
 		AllowedOrigins: allowedOrigins,
 		AllowedMethods: []string{"GET", "POST", "PATCH", "DELETE", "OPTIONS"},
 		AllowedHeaders: []string{"Accept", "Authorization", "Content-Type"},
+		ExposedHeaders: []string{observability.TraceHeader},
 		MaxAge:         300,
 	}))
 
@@ -44,16 +46,17 @@ func SetupRouter(api *API, verifier *auth.Verifier, allowedOrigins []string) htt
 				r.With(auth.RequireAccount).Delete("/{id}/documents/{docId}", api.DetachDocumentHandler)
 			})
 
-			r.Post("/chat", api.ChatHandler)
+			// Only the AI routes are traced (observability.HTTP), to keep within Langfuse's free quota.
+			r.With(observability.HTTP("/api/chat")).Post("/chat", api.ChatHandler)
 
 			r.Route("/quizzes", func(r chi.Router) {
-				r.With(auth.RequireAccount).Post("/generate", api.GenerateQuizHandler)
+				r.With(auth.RequireAccount, observability.HTTP("/api/quizzes/generate")).Post("/generate", api.GenerateQuizHandler)
 				r.Get("/{id}", api.GetQuizHandler)
 				r.Post("/{id}/answer", api.AnswerQuizHandler)
 			})
 
 			r.Route("/flashcards", func(r chi.Router) {
-				r.With(auth.RequireAccount).Post("/generate", api.GenerateFlashcardsHandler)
+				r.With(auth.RequireAccount, observability.HTTP("/api/flashcards/generate")).Post("/generate", api.GenerateFlashcardsHandler)
 				r.Get("/", api.ListFlashcardsHandler)
 				r.Get("/{id}", api.GetFlashcardSetHandler)
 				r.Patch("/cards/{cardId}", api.UpdateFlashcardStatusHandler)
@@ -63,7 +66,7 @@ func SetupRouter(api *API, verifier *auth.Verifier, allowedOrigins []string) htt
 				r.Use(auth.RequireAccount)
 
 				r.Route("/documents", func(r chi.Router) {
-					r.Post("/upload", api.UploadDocumentHandler)
+					r.With(observability.HTTP("/api/documents/upload")).Post("/upload", api.UploadDocumentHandler)
 					r.Get("/", api.ListDocumentsHandler)
 					r.Get("/{id}", api.GetDocumentHandler)
 					r.Get("/{id}/status", api.GetDocumentStatusHandler)
@@ -72,7 +75,7 @@ func SetupRouter(api *API, verifier *auth.Verifier, allowedOrigins []string) htt
 					r.Delete("/{id}", api.DeleteDocumentHandler)
 				})
 
-				r.Post("/summaries/generate", api.GenerateSummaryHandler)
+				r.With(observability.HTTP("/api/summaries/generate")).Post("/summaries/generate", api.GenerateSummaryHandler)
 				r.Get("/progress", api.GetProgressHandler)
 				r.Post("/account/claim", api.ClaimGuestHandler(verifier))
 			})
