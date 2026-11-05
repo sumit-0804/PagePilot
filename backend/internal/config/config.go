@@ -32,8 +32,10 @@ type Config struct {
 	EmbeddingTPM       int
 	EmbeddingRPD       int
 	GeminiAPIKey       string
-	EmbeddingAPIKey    string // openai-compatible provider only
-	EmbeddingBaseURL   string // openai-compatible provider only
+	// GeminiFallbackAPIKey (optional, another Google project) takes over OCR when GeminiAPIKey is out of quota.
+	GeminiFallbackAPIKey string
+	EmbeddingAPIKey      string // openai-compatible provider only
+	EmbeddingBaseURL     string // openai-compatible provider only
 	// EmbeddingQueryPrefix is put before search queries only (openai-compatible provider);
 	// "\n" in the setting becomes a newline, as in Qwen3's "Instruct: ...\nQuery:".
 	EmbeddingQueryPrefix string
@@ -62,15 +64,23 @@ type Config struct {
 	SentryDSN         string
 }
 
-// Load reads .env (cwd or repo root) and validates required settings.
-func Load() (*Config, error) {
+// LoadDotEnv reads .env from the cwd or repo root; variables already set are never overridden.
+func LoadDotEnv() error {
 	for _, f := range []string{".env", "../.env"} {
 		if _, err := os.Stat(f); err == nil {
 			if err := godotenv.Load(f); err != nil {
-				return nil, fmt.Errorf("loading %s: %w", f, err)
+				return fmt.Errorf("loading %s: %w", f, err)
 			}
-			break
+			return nil
 		}
+	}
+	return nil
+}
+
+// Load reads .env (cwd or repo root) and validates required settings.
+func Load() (*Config, error) {
+	if err := LoadDotEnv(); err != nil {
+		return nil, err
 	}
 
 	var errs []error
@@ -100,6 +110,7 @@ func Load() (*Config, error) {
 		EmbeddingProvider:    strings.ToLower(getEnv("EMBEDDING_PROVIDER", "gemini")),
 		EmbeddingModel:       getEnv("EMBEDDING_MODEL", "gemini-embedding-2"),
 		GeminiAPIKey:         getEnv("GEMINI_API_KEY", ""),
+		GeminiFallbackAPIKey: getEnv("GEMINI_FALLBACK_API_KEY", ""),
 		EmbeddingAPIKey:      getEnv("EMBEDDING_API_KEY", ""),
 		EmbeddingQueryPrefix: strings.ReplaceAll(getEnv("EMBEDDING_QUERY_PREFIX", ""), `\n`, "\n"),
 		EmbeddingBaseURL:     getEnv("EMBEDDING_BASE_URL", ""),

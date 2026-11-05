@@ -4,7 +4,7 @@
 {"id":"rag-cell-04","doc":"cell-biology","question":"Which organelle makes most of a cell's energy?","evidence":["Mitochondria produce most of the cell's ATP"]}
 {"id":"rag-cell-05","doc":"cell-biology","question":"What does the Golgi apparatus do with proteins?","evidence":["modifies, sorts and packages proteins into vesicles"]}
 {"id":"rag-cell-06","doc":"cell-biology","question":"Which organelle breaks down old cell parts and bacteria?","evidence":["Lysosomes contain digestive enzymes"]}
-{"id":"rag-cell-07","doc":"cell-biology","question":"How are the phospholipids arranged in the membrane?","evidence":["a hydrophilic head that faces water and two hydrophobic tails"],"answer":true}
+{"id":"rag-cell-07","doc":"cell-biology","question":"How are the phospholipids arranged in the membrane?","evidence":["a hydrophilic head that faces water and two hydrophobic tails"]}
 {"id":"rag-cell-08","doc":"cell-biology","question":"What is osmosis?","evidence":["Osmosis is the diffusion of water across a selectively permeable membrane"]}
 {"id":"rag-cell-09","doc":"cell-biology","question":"Why does active transport need energy, and what is an example of it?","evidence":["requires energy in the form of ATP","sodium-potassium pump"]}
 {"id":"rag-cell-10","doc":"cell-biology","question":"How is meiosis different from mitosis in the cells it makes?","evidence":["produces four sex cells, each with half the number of chromosomes"]}
@@ -15,7 +15,7 @@
 {"id":"rag-net-05","doc":"computer-networks","question":"Why would a video call use UDP instead of TCP?","evidence":["better suited to live video, voice calls and online games"]}
 {"id":"rag-net-06","doc":"computer-networks","question":"What range of numbers can a port have?","evidence":["Port numbers range from 0 to 65535"]}
 {"id":"rag-net-07","doc":"computer-networks","question":"Which port does HTTPS normally use?","evidence":["port 443 for HTTPS"]}
-{"id":"rag-net-08","doc":"computer-networks","question":"What happens when my computer looks up a website's name?","evidence":["your computer asks a recursive resolver"],"answer":true}
+{"id":"rag-net-08","doc":"computer-networks","question":"What happens when my computer looks up a website's name?","evidence":["your computer asks a recursive resolver"]}
 {"id":"rag-net-09","doc":"computer-networks","question":"What does a 404 status code mean?","evidence":["404 means the resource was not found"]}
 {"id":"rag-net-10","doc":"computer-networks","question":"How does HTTPS keep traffic private?","evidence":["HTTPS is HTTP sent over TLS, which encrypts the traffic"]}
 {"id":"rag-fr-01","doc":"french-revolution","question":"How was French society divided before the revolution?","evidence":["French society was divided into three estates"],"answer":true}
@@ -25,7 +25,7 @@
 {"id":"rag-fr-05","doc":"french-revolution","question":"What were the crowds searching for when they attacked the Bastille?","evidence":["The crowd was looking mainly for gunpowder and weapons"]}
 {"id":"rag-fr-06","doc":"french-revolution","question":"What principles did the Declaration of the Rights of Man set out?","evidence":["men are born and remain free and equal in rights"]}
 {"id":"rag-fr-07","doc":"french-revolution","question":"When did France stop being a monarchy?","evidence":["became a republic in September 1792"]}
-{"id":"rag-fr-08","doc":"french-revolution","question":"Who was in charge during the Reign of Terror?","evidence":["led in practice by Maximilien Robespierre"],"answer":true}
+{"id":"rag-fr-08","doc":"french-revolution","question":"Who was in charge during the Reign of Terror?","evidence":["led in practice by Maximilien Robespierre"]}
 {"id":"rag-fr-09","doc":"french-revolution","question":"How did the Terror come to an end?","evidence":["The Terror ended in July 1794 when Robespierre himself was arrested and executed"]}
 {"id":"rag-fr-10","doc":"french-revolution","question":"Which event is often seen as the end of the revolution?","evidence":["Napoleon Bonaparte seized power in a coup"]}
 {"id":"rag-lr-01","doc":"linear-regression","question":"What do the intercept and slope mean in a simple regression line?","evidence":["The intercept is the predicted value of y when x is zero"],"answer":true}
@@ -34,17 +34,7 @@
 {"id":"rag-lr-04","doc":"linear-regression","question":"Why are the errors squared instead of just added up?","evidence":["Squaring the residuals stops positive and negative errors from cancelling out"]}
 {"id":"rag-lr-05","doc":"linear-regression","question":"What does R squared tell me about a model?","evidence":["measures the share of the variation in y that the model explains"]}
 {"id":"rag-lr-06","doc":"linear-regression","question":"Why would I use adjusted R squared?","evidence":["adding more input variables never lowers R squared"]}
-{"id":"rag-lr-07","doc":"linear-regression","question":"What is homoscedasticity?","evidence":["should have constant variance across all values of x"],"answer":true}
+{"id":"rag-lr-07","doc":"linear-regression","question":"What is homoscedasticity?","evidence":["should have constant variance across all values of x"]}
 {"id":"rag-lr-08","doc":"linear-regression","question":"What problem happens when two predictors are strongly correlated?","evidence":["Multicollinearity occurs when input variables are strongly correlated with each other"]}
 {"id":"rag-lr-09","doc":"linear-regression","question":"How can I tell if my model is overfitting?","evidence":["the data are split into a training set used to fit the model and a test set"]}
 {"id":"rag-lr-10","doc":"linear-regression","question":"What is RMSE and what units is it in?","evidence":["expressed in the same units as y"]}
-{"id":"rag-wc-01","doc":"water-cycle","question":"What powers the water cycle?","evidence":["It is driven mainly by energy from the Sun and by gravity"],"answer":true}
-{"id":"rag-wc-02","doc":"water-cycle","question":"How much of the world's evaporation comes from the oceans?","evidence":["about 86 percent of global evaporation"]}
-{"id":"rag-wc-03","doc":"water-cycle","question":"How do plants give off water vapour?","evidence":["a process known as transpiration"]}
-{"id":"rag-wc-04","doc":"water-cycle","question":"What is it called when snow turns straight into vapour?","evidence":["Sublimation is the change of ice or snow directly into water vapour"]}
-{"id":"rag-wc-05","doc":"water-cycle","question":"How do clouds form from rising air?","evidence":["condenses onto tiny particles of dust, salt or smoke called condensation nuclei"],"answer":true}
-{"id":"rag-wc-06","doc":"water-cycle","question":"What is fog?","evidence":["Fog is simply a cloud that forms at ground level"]}
-{"id":"rag-wc-07","doc":"water-cycle","question":"How do hailstones get their layers?","evidence":["adding layers of ice each time"]}
-{"id":"rag-wc-08","doc":"water-cycle","question":"What happens to rain that soaks into the ground?","evidence":["soaks into the soil through infiltration"],"answer":true}
-{"id":"rag-wc-09","doc":"water-cycle","question":"Where is groundwater stored?","evidence":["layers of permeable rock or sediment called aquifers"]}
-{"id":"rag-wc-10","doc":"water-cycle","question":"How long does water stay in the atmosphere?","evidence":["may stay in the atmosphere for only about nine days"]}

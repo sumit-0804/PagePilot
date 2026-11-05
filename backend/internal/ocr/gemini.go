@@ -20,7 +20,9 @@ const (
 )
 
 type GeminiConfig struct {
-	APIKey       string
+	// APIKeys are tried in order: a key out of quota, failing or rejected hands the request to the next.
+	// Each needs its own Google project, since quota is per project.
+	APIKeys      []string
 	Model        string
 	RPM          int
 	TPM          int
@@ -31,27 +33,53 @@ type GeminiConfig struct {
 // readCall sends one small PDF and returns one text per page; truncated means the answer hit the output limit.
 type readCall func(ctx context.Context, pdfData []byte, pageCount int) (texts []string, truncated bool, err error)
 
+// apiKey is one Gemini key with its own client and rate limits.
+type apiKey struct {
+	call    readCall
+	check   func(ctx context.Context) error
+	limiter *gemini.Limiter
+}
+
 type GeminiOCR struct {
 	model        string
-	call         readCall
-	check        func(ctx context.Context) error
-	limiter      *gemini.Limiter
+	keys         []*apiKey
 	sleep        func(ctx context.Context, d time.Duration) error
 	pagesPerCall int
 	maxRetries   int
 }
 
 func NewGeminiOCR(ctx context.Context, cfg GeminiConfig) (*GeminiOCR, error) {
-	client, err := genai.NewClient(ctx, &genai.ClientConfig{APIKey: cfg.APIKey, Backend: genai.BackendGeminiAPI})
-	if err != nil {
-		return nil, fmt.Errorf("creating gemini client: %w", err)
+	if len(cfg.APIKeys) == 0 {
+		return nil, errors.New("no Gemini API key for OCR")
 	}
-	call := func(ctx context.Context, pdfData []byte, pageCount int) ([]string, bool, error) {
+	calls := make([]readCall, len(cfg.APIKeys))
+	checks := make([]func(context.Context) error, len(cfg.APIKeys))
+	for i, key := range cfg.APIKeys {
+		client, err := genai.NewClient(ctx, &genai.ClientConfig{APIKey: key, Backend: genai.BackendGeminiAPI})
+		if err != nil {
+			return nil, fmt.Errorf("creating gemini client %d: %w", i+1, err)
+		}
+		calls[i] = readWith(client, cfg.Model)
+		checks[i] = func(ctx context.Context) error {
+			_, err := client.Models.Get(ctx, cfg.Model, nil)
+			return err
+		}
+	}
+	g := newGeminiOCR(cfg, calls...)
+	for i, k := range g.keys {
+		k.check = checks[i]
+	}
+	return g, nil
+}
+
+// readWith sends one PDF to the model through one key's client.
+func readWith(client *genai.Client, modelName string) readCall {
+	return func(ctx context.Context, pdfData []byte, pageCount int) ([]string, bool, error) {
 		content := genai.NewContentFromParts([]*genai.Part{
 			genai.NewPartFromBytes(pdfData, "application/pdf"),
 			genai.NewPartFromText(transcribePrompt(pageCount)),
 		}, genai.RoleUser)
-		resp, err := client.Models.GenerateContent(ctx, cfg.Model, []*genai.Content{content}, &genai.GenerateContentConfig{
+		resp, err := client.Models.GenerateContent(ctx, modelName, []*genai.Content{content}, &genai.GenerateContentConfig{
 			Temperature:      genai.Ptr[float32](0),
 			ResponseMIMEType: "application/json",
 			ResponseSchema:   pagesSchema,
@@ -65,27 +93,34 @@ func NewGeminiOCR(ctx context.Context, cfg GeminiConfig) (*GeminiOCR, error) {
 		texts, err := parsePages(resp.Text(), pageCount)
 		return texts, false, err
 	}
-	g := newGeminiOCR(cfg, call)
-	g.check = func(ctx context.Context) error {
-		_, err := client.Models.Get(ctx, cfg.Model, nil)
-		return err
-	}
-	return g, nil
 }
 
-func newGeminiOCR(cfg GeminiConfig, call readCall) *GeminiOCR {
+// newGeminiOCR gives each key's call its own limiter; the configured limits apply per key.
+func newGeminiOCR(cfg GeminiConfig, calls ...readCall) *GeminiOCR {
 	pagesPerCall := cfg.PagesPerCall
 	if pagesPerCall <= 0 {
 		pagesPerCall = 10
 	}
-	return &GeminiOCR{
+	g := &GeminiOCR{
 		model:        cfg.Model,
-		call:         call,
-		limiter:      gemini.NewLimiter(cfg.RPM, cfg.TPM, cfg.RPD),
 		sleep:        gemini.SleepCtx,
 		pagesPerCall: pagesPerCall,
 		maxRetries:   5,
 	}
+	for _, call := range calls {
+		g.keys = append(g.keys, &apiKey{call: call, limiter: gemini.NewLimiter(cfg.RPM, cfg.TPM, cfg.RPD)})
+	}
+	return g
+}
+
+// check looks every key up against the model, which uses none of the OCR quota.
+func (g *GeminiOCR) check(ctx context.Context) error {
+	for i, k := range g.keys {
+		if err := k.check(ctx); err != nil {
+			return fmt.Errorf("key %d: %w", i+1, err)
+		}
+	}
+	return nil
 }
 
 func (g *GeminiOCR) Model() string { return g.model }
@@ -149,16 +184,37 @@ func (g *GeminiOCR) readHalves(ctx context.Context, pdfData []byte, pages []int)
 	return append(first, second...), nil
 }
 
-// callWithRetry makes one rate-limited request, retrying on per-minute limits and temporary server errors.
+// callWithRetry reads with the first key, moving to the next when a key is out of quota, keeps failing
+// or is rejected. Errors that any key would hit (a bad request, a cancelled upload) are returned as is.
 func (g *GeminiOCR) callWithRetry(ctx context.Context, subset []byte, pageCount int) ([]string, bool, error) {
+	for i, k := range g.keys {
+		texts, truncated, err := g.callKey(ctx, k, subset, pageCount)
+		if err == nil || i == len(g.keys)-1 || !otherKeyMayWork(err) {
+			return texts, truncated, err
+		}
+		log.Printf("[ocr] Gemini key %d failed (%v); trying key %d", i+1, err, i+2)
+	}
+	return nil, false, errors.New("no Gemini API key for OCR")
+}
+
+func otherKeyMayWork(err error) bool {
+	if errors.Is(err, ErrDailyQuota) {
+		return true
+	}
+	apiErr, ok := gemini.AsAPIError(err)
+	return ok && (apiErr.Code == 401 || apiErr.Code == 403 || apiErr.Code == 429 || apiErr.Code >= 500)
+}
+
+// callKey makes one rate-limited request with one key, retrying on per-minute limits and temporary server errors.
+func (g *GeminiOCR) callKey(ctx context.Context, k *apiKey, subset []byte, pageCount int) ([]string, bool, error) {
 	for attempt := 0; ; attempt++ {
-		if _, err := g.limiter.Admit(ctx, []int{tokensPerPage * pageCount}); err != nil {
+		if _, err := k.limiter.Admit(ctx, []int{tokensPerPage * pageCount}); err != nil {
 			if errors.Is(err, gemini.ErrDailyQuota) {
 				return nil, false, ErrDailyQuota
 			}
 			return nil, false, err
 		}
-		texts, truncated, err := g.call(ctx, subset, pageCount)
+		texts, truncated, err := k.call(ctx, subset, pageCount)
 		if err == nil {
 			return texts, truncated, nil
 		}
@@ -168,7 +224,7 @@ func (g *GeminiOCR) callWithRetry(ctx context.Context, subset []byte, pageCount 
 			return nil, false, fmt.Errorf("gemini OCR request failed: %w", err)
 		}
 		if apiErr.Code == 429 && gemini.IsDailyQuotaError(apiErr) {
-			g.limiter.ExhaustDay()
+			k.limiter.ExhaustDay()
 			return nil, false, ErrDailyQuota
 		}
 		if attempt >= g.maxRetries {

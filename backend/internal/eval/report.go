@@ -71,6 +71,7 @@ type Report struct {
 	Models          map[string]string `json:"models"`
 	PromptVersions  map[string]string `json:"prompt_versions,omitempty"`
 	Judge           bool              `json:"judge"`
+	Tokens          map[string]int    `json:"tokens"` // input + output tokens each model reported
 	BaselineVersion string            `json:"baseline_dataset_version,omitempty"`
 	LikeForLike     bool              `json:"baseline_like_for_like"`
 	Suites          []SuiteResult     `json:"suites"`
@@ -121,6 +122,22 @@ func NewSuite(name string, cases []CaseResult) SuiteResult {
 	return s
 }
 
+// zeroFailed gives failed cases that never produced metrics (the product call itself failed) a 0 on
+// the suite's main metric, so they count against it instead of vanishing from the average.
+func zeroFailed(cases []CaseResult, metric string) {
+	for i := range cases {
+		if cases[i].Outcome != Fail {
+			continue
+		}
+		if _, ok := cases[i].Metrics[metric]; !ok {
+			if cases[i].Metrics == nil {
+				cases[i].Metrics = map[string]float64{}
+			}
+			cases[i].Metrics[metric] = 0
+		}
+	}
+}
+
 // MeanMetric averages one metric over the scored (pass or fail) cases that have it.
 func MeanMetric(cases []CaseResult, name string) (float64, bool) {
 	var vals []float64
@@ -146,7 +163,11 @@ func (r *Report) Finish(t *Thresholds, baseline *Report) {
 		scored := s.Counts[Pass] + s.Counts[Fail] + s.Counts[Error]
 		if scored == 0 || float64(s.Counts[Error])/float64(scored) > t.MaxErrorRate {
 			s.Status = StatusInconclusive
-			s.Notes = append(s.Notes, fmt.Sprintf("%d of %d cases hit infrastructure errors; scores are not reliable", s.Counts[Error], scored))
+			note := fmt.Sprintf("%d of %d cases hit infrastructure errors; scores are not reliable", s.Counts[Error], scored)
+			if scored == 0 {
+				note = "no case was scored (all skipped)"
+			}
+			s.Notes = append(s.Notes, note)
 			inconclusive = true
 			continue
 		}
@@ -256,6 +277,15 @@ func (r *Report) PrintSummary(w io.Writer) {
 			}
 		}
 	}
+	models := make([]string, 0, len(r.Tokens))
+	for m := range r.Tokens {
+		models = append(models, m)
+	}
+	sort.Strings(models)
+	fmt.Fprintf(w, "\nTook %s. Tokens used:", r.FinishedAt.Sub(r.StartedAt).Round(time.Second))
+	for _, m := range models {
+		fmt.Fprintf(w, " %s %d;", m, r.Tokens[m])
+	}
 	fmt.Fprintf(w, "\nExit code %d\n", r.ExitCode)
 }
 
@@ -266,8 +296,9 @@ func orDash(s string) string {
 	return s
 }
 
-// Rate limits, provider outages and timeouts. Status codes are matched as whole numbers.
-var infraRe = regexp.MustCompile(`(?i)\b(429|500|502|503|504)\b|rate.?limit|too many requests|timeout|timed out|connection (reset|refused)|no such host|unexpected EOF|overloaded`)
+// Rate limits, provider outages and timeouts (status codes matched as whole numbers), and a provider
+// rejecting the request itself (4xx), which is a setup problem, not a sign of answer quality.
+var infraRe = regexp.MustCompile(`(?i)\b(429|500|502|503|504)\b|rate.?limit|too many requests|timeout|timed out|connection (reset|refused)|no such host|unexpected EOF|overloaded|API error: 4\d\d|returned status 4\d\d`)
 
 // IsInfra reports whether err is an infrastructure problem rather than a quality failure.
 func IsInfra(err error) bool {

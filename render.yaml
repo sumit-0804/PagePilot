@@ -33,6 +33,8 @@ services:
         value: openai/gpt-oss-120b
       - key: GEMINI_API_KEY # OCR; also the embeddings standby
         sync: false
+      - key: GEMINI_FALLBACK_API_KEY # optional, another Google project; OCR uses it when the first key is out of quota
+        sync: false
       # Embeddings: Cloudflare Workers AI (OpenAI-compatible). EMBEDDING_DIM must match the vector(1024) column.
       - key: EMBEDDING_PROVIDER
         value: openai

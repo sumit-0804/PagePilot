@@ -1,14 +1,21 @@
 package eval
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/pagepilot/backend/internal/embeddings"
 	"github.com/pagepilot/backend/internal/models"
+	"github.com/pagepilot/backend/internal/observability"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
 
 // These tests need no database or API keys, so they run on every pull request.
@@ -25,7 +32,8 @@ func TestDatasetsAreValid(t *testing.T) {
 		}
 	}
 	got := fmt.Sprint(len(d.Corpus), len(d.RAG), answers, len(d.Tools), len(d.Quiz), len(d.Flashcards))
-	if got != "5 50 15 20 10 10" {
+	// Kept small on purpose: a full judged run must stay well under Groq's daily token limit.
+	if got != "4 40 8 8 8 8" {
 		t.Errorf("corpus, rag, answer, tools, quiz, flashcards = %s; update this test if the datasets grew on purpose", got)
 	}
 	if len(d.Version) != 12 {
@@ -189,12 +197,88 @@ func TestParseVerdict(t *testing.T) {
 	if err != nil || v.Scores["correctness"] != 4 || v.Reasons["relevance"] != "on topic" {
 		t.Fatalf("verdict %+v, err %v", v, err)
 	}
+	// A reasoning model may think aloud, braces included, before the JSON.
+	v, err = parseVerdict("<think>Score {maybe 3}?</think>\n```json\n{\"correctness\":{\"score\":3,\"reason\":\"r\"},\"relevance\":{\"score\":4,\"reason\":\"r\"}}\n```", criteria)
+	if err != nil || v.Scores["correctness"] != 3 {
+		t.Fatalf("verdict after reasoning %+v, err %v", v, err)
+	}
 	for _, raw := range []string{`not json`, `{"correctness":{"score":4}}`, `{"correctness":{"score":9},"relevance":{"score":3}}`} {
 		_, err := parseVerdict(raw, criteria)
 		var je *JudgeError
 		if !errors.As(err, &je) {
 			t.Errorf("%s: want a JudgeError, got %v", raw, err)
 		}
+	}
+}
+
+func TestRunCasesKeepsOrderAndLimits(t *testing.T) {
+	r := &Runner{Env: Env{Concurrency: 3, Out: io.Discard}}
+	var running, peak atomic.Int32
+	got := r.runCases(10, func(i int) CaseResult {
+		n := running.Add(1)
+		for p := peak.Load(); n > p && !peak.CompareAndSwap(p, n); p = peak.Load() {
+		}
+		time.Sleep(time.Duration(10-i) * time.Millisecond) // later cases finish first
+		running.Add(-1)
+		return CaseResult{ID: fmt.Sprint(i)}
+	})
+	for i, c := range got {
+		if c.ID != fmt.Sprint(i) {
+			t.Fatalf("results out of order: %v", got)
+		}
+	}
+	if peak.Load() > 3 {
+		t.Errorf("ran %d cases at once, limit 3", peak.Load())
+	}
+
+	r.Limit = 4
+	if n := len(r.runCases(10, func(int) CaseResult { return CaseResult{} })); n != 4 {
+		t.Errorf("-limit 4 ran %d cases", n)
+	}
+}
+
+func TestTokenBudgetSkipsLLMCases(t *testing.T) {
+	spans := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(spans))
+	record := func(model string, in, out int) {
+		_, s := tp.Tracer("t").Start(context.Background(), "chat")
+		s.SetAttributes(observability.AttrGenAIRequestModel.String(model),
+			observability.AttrGenAIInputTokens.Int(in), observability.AttrGenAIOutputTokens.Int(out))
+		s.End()
+	}
+	record("judge", 600, 100)
+
+	r := &Runner{Env: Env{Spans: spans, MaxTokens: 1000, Out: io.Discard}}
+	ran := 0
+	run := func(context.Context, string) CaseResult { ran++; return CaseResult{Outcome: Pass} }
+	r.traced(context.Background(), "quiz", "q0", nil, run)
+	record("agent", 300, 100) // the agent and judge together pass 1000, but neither does alone
+	if res := r.traced(context.Background(), "quiz", "q0", nil, run); res.Outcome != Pass || ran != 2 {
+		t.Fatalf("the budget is per model, so this case should run: %+v", res)
+	}
+
+	record("agent", 500, 100)
+	if got := r.TokensUsed(); got["agent"] != 1000 || got["judge"] != 700 {
+		t.Fatalf("tokens used %v", got)
+	}
+	res := r.traced(context.Background(), "quiz", "q1", nil, run)
+	if ran != 2 || res.Outcome != Skipped {
+		t.Fatalf("a case past the budget should be skipped, got %+v (ran %v)", res, ran)
+	}
+	if res := r.traced(context.Background(), "rag", "r1", nil, func(context.Context, string) CaseResult { return CaseResult{Outcome: Pass} }); res.Outcome != Pass {
+		t.Fatalf("retrieval uses no LLM tokens, so the budget doesn't stop it: %+v", res)
+	}
+}
+
+func TestFailedCasesCountAgainstTheMainMetric(t *testing.T) {
+	cases := []CaseResult{
+		{Outcome: Pass, Metrics: map[string]float64{"correct": 1}},
+		{Outcome: Fail, Problems: []string{"the agent call failed"}},
+		{Outcome: Error, Error: "429"},
+	}
+	zeroFailed(cases, "correct")
+	if v, _ := MeanMetric(cases, "correct"); v != 0.5 {
+		t.Fatalf("accuracy %.2f, want 0.50: the failed case counts as 0 and the error is left out", v)
 	}
 }
 
@@ -205,6 +289,7 @@ func TestIsInfra(t *testing.T) {
 		fmt.Errorf("embedding: %w", embeddings.ErrDailyQuota),
 		&JudgeError{"bad json"},
 		errors.New("read tcp: connection reset by peer"),
+		errors.New(`groq returned status 400: {"error":"model not found"}`),
 	}
 	for _, err := range infra {
 		if !IsInfra(err) {

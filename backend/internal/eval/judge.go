@@ -80,6 +80,13 @@ func parseVerdict(raw string, criteria []string) (*Verdict, error) {
 		Score  float64 `json:"score"`
 		Reason string  `json:"reason"`
 	}
+	// Reasoning models may think aloud (with braces) before the JSON; keep only what follows.
+	if _, after, ok := strings.Cut(raw, "</think>"); ok {
+		raw = after
+	}
+	if i, j := strings.Index(raw, "{"), strings.LastIndex(raw, "}"); i >= 0 && j > i {
+		raw = raw[i : j+1]
+	}
 	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
 		return nil, &JudgeError{fmt.Sprintf("judge reply is not the expected JSON: %v", err)}
 	}

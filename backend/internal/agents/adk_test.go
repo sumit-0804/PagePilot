@@ -15,12 +15,14 @@ import (
 	"github.com/google/uuid"
 	"github.com/pagepilot/backend/internal/database"
 	"github.com/pagepilot/backend/internal/embeddings"
+	"github.com/pagepilot/backend/internal/eval"
 	"github.com/pagepilot/backend/internal/models"
 	"github.com/pagepilot/backend/internal/rag"
 	"github.com/pagepilot/backend/internal/services"
 	"github.com/pagepilot/backend/internal/storage"
 	"github.com/pagepilot/backend/internal/vectorstore"
 	"github.com/pagepilot/backend/internal/websearch"
+	"google.golang.org/adk/v2/agent/llmagent"
 	"google.golang.org/adk/v2/model"
 	"google.golang.org/genai"
 	"gorm.io/gorm"
@@ -351,6 +353,30 @@ func TestAgentCreatesQuizAndEndsTurn(t *testing.T) {
 	}
 	if session.UserID != f.user || session.ConversationID == nil || *session.ConversationID != f.conv.ID || session.TotalQuestions != 2 {
 		t.Fatalf("quiz saved for the wrong user or conversation: %+v", session)
+	}
+}
+
+func TestBeforeToolCallbackCanStubATool(t *testing.T) {
+	f := setup(t, jsonLLM{json: `{"questions": []}`})
+	f.svc.BeforeToolCallbacks = []llmagent.BeforeToolCallback{eval.StubStudyTools}
+	var toolResult map[string]any
+	m := &scriptedModel{steps: []func(*model.LLMRequest) ([]*model.LLMResponse, error){
+		callTool("create_quiz", map[string]any{"document_id": f.conv.Documents[0].ID, "topic": "cells", "num_questions": 2}),
+		func(req *model.LLMRequest) ([]*model.LLMResponse, error) {
+			toolResult = functionResponse(req, "create_quiz")
+			return answer("Done.")(req)
+		},
+	}}
+	if _, err := f.engine(t, m).Respond(context.Background(), f.request("Quiz me", ""), nil); err != nil {
+		t.Fatal(err)
+	}
+	if toolResult["status"] != "created" {
+		t.Fatalf("the stub's result should reach the model, got %v", toolResult)
+	}
+	var sessions int64
+	f.db.Model(&models.QuizSession{}).Where("user_id = ?", f.user).Count(&sessions)
+	if sessions != 0 {
+		t.Fatalf("a stubbed tool must not run, but %d quiz sessions were saved", sessions)
 	}
 }
 

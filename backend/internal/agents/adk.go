@@ -41,11 +41,15 @@ type Services struct {
 	Summaries *services.SummaryService
 	Progress  *services.ProgressService
 	Web       websearch.Searcher // nil turns the web_search tool off
+	// BeforeToolCallbacks run after the status report; one returning a result skips the tool (evals use this).
+	BeforeToolCallbacks []llmagent.BeforeToolCallback
 }
 
-// NewGroqModel talks to Groq through ADK's OpenAI-compatible Chat Completions model.
-func NewGroqModel(ctx context.Context, apiKey, modelName string) (model.LLM, error) {
-	var opts []option.RequestOption
+// NewGroqModel talks to Groq through ADK's OpenAI-compatible Chat Completions model. extra options
+// come last, so they can replace the defaults (the eval passes its pacing HTTP client).
+func NewGroqModel(ctx context.Context, apiKey, modelName string, extra ...option.RequestOption) (model.LLM, error) {
+	// Rate limits (429) are retried with Groq's Retry-After instead of failing the reply.
+	opts := []option.RequestOption{option.WithMaxRetries(4)}
 	if strings.Contains(modelName, "gpt-oss") {
 		// The reasoning text is never shown, so don't have Groq send it.
 		opts = append(opts, option.WithJSONSet("include_reasoning", false))
@@ -54,7 +58,7 @@ func NewGroqModel(ctx context.Context, apiKey, modelName string) (model.LLM, err
 		APIKey:  apiKey,
 		BaseURL: "https://api.groq.com/openai/v1",
 		API:     openaimodel.APIChatCompletions,
-		Options: opts,
+		Options: append(opts, extra...),
 	})
 }
 
@@ -76,7 +80,7 @@ func NewEngine(llm model.LLM, svc Services) (*Engine, error) {
 		InstructionProvider:   instruction(svc.Web != nil),
 		GenerateContentConfig: &genai.GenerateContentConfig{Temperature: genai.Ptr[float32](0.2)},
 		Tools:                 tools,
-		BeforeToolCallbacks:   []llmagent.BeforeToolCallback{reportStatus},
+		BeforeToolCallbacks:   append([]llmagent.BeforeToolCallback{reportStatus}, svc.BeforeToolCallbacks...),
 		OnToolErrorCallbacks:  []llmagent.OnToolErrorCallback{logToolError},
 	})
 	if err != nil {

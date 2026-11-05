@@ -6,5 +6,3 @@
 {"id":"cards-fr-02","doc":"french-revolution","topic":"the rise of Napoleon","count":5}
 {"id":"cards-lr-01","doc":"linear-regression","topic":"slope, intercept and R squared","count":5}
 {"id":"cards-lr-02","doc":"linear-regression","topic":"overfitting and multicollinearity","count":5}
-{"id":"cards-wc-01","doc":"water-cycle","topic":"precipitation","count":5}
-{"id":"cards-wc-02","doc":"water-cycle","topic":"runoff, infiltration and aquifers","count":5}

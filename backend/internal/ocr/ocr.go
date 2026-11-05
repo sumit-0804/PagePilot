@@ -13,7 +13,7 @@ import (
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
 )
 
-// ErrDailyQuota means the OCR model's requests-per-day limit is used up until midnight Pacific time.
+// ErrDailyQuota means the OCR model's requests-per-day limit is used up on every key until midnight Pacific time.
 var ErrDailyQuota = errors.New("daily OCR quota reached")
 
 // Recognizer reads scanned pages. Pages are 1-based and the texts come back in the same order.
@@ -27,8 +27,12 @@ func New(ctx context.Context, cfg *config.Config) (Recognizer, error) {
 	if cfg.OCRProvider != "gemini" {
 		return nil, nil
 	}
+	keys := []string{cfg.GeminiAPIKey}
+	if cfg.GeminiFallbackAPIKey != "" {
+		keys = append(keys, cfg.GeminiFallbackAPIKey)
+	}
 	r, err := NewGeminiOCR(ctx, GeminiConfig{
-		APIKey:       cfg.GeminiAPIKey,
+		APIKeys:      keys,
 		Model:        cfg.OCRModel,
 		RPM:          cfg.OCRRPM,
 		TPM:          cfg.OCRTPM,

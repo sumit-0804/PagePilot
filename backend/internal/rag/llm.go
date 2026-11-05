@@ -100,6 +100,12 @@ func NewGroqClient(cfg *config.Config) *GroqClient {
 	return &GroqClient{apiKey: cfg.GroqAPIKey, model: cfg.GroqModel, httpClient: &http.Client{}}
 }
 
+// WithTransport sends requests through t (the eval paces calls to Groq's per-minute limits this way).
+func (g *GroqClient) WithTransport(t http.RoundTripper) *GroqClient {
+	g.httpClient = &http.Client{Transport: t}
+	return g
+}
+
 func (g *GroqClient) Generate(ctx context.Context, messages []ChatMessage) (string, error) {
 	return g.complete(ctx, messages, nil)
 }

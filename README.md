@@ -49,7 +49,7 @@ bun install --cwd frontend
 cp .env.example .env
 ```
 
-Add your Groq key, Cloudflare token (`EMBEDDING_API_KEY`) and account id (in `EMBEDDING_BASE_URL`), and Gemini key to `.env`, and set the `OCR_*` rate limits from your AI Studio rate-limit page.
+Add your Groq key, Cloudflare token (`EMBEDDING_API_KEY`) and account id (in `EMBEDDING_BASE_URL`), and Gemini key to `.env`, and set the `OCR_*` rate limits from your AI Studio rate-limit page. Optionally add `GEMINI_FALLBACK_API_KEY`, a key from a second Google project that OCR switches to when the first runs out of quota.
 
 ```bash
 bunx supabase start
@@ -95,7 +95,7 @@ The Go tests need the local Supabase stack running, but no API keys.
 
 ## Evaluate the AI
 
-The eval runs the real retrieval, agent, quiz and flashcard code against five study documents in `backend/evaluation`, on the local database, and compares the results with the saved baseline. It needs the Groq and Cloudflare keys.
+The eval runs the real retrieval, agent, quiz and flashcard code against four study documents in `backend/evaluation`, on the local database, and compares the results with the saved baseline. It runs on its own keys (`EVAL_GROQ_API_KEY`, `EVAL_CLOUDFLARE_API_KEY`, `EVAL_CLOUDFLARE_ACCOUNT_ID`), so it never uses production's daily limits, and stops starting new cases at 120k tokens (`-max-tokens`).
 
 ```bash
 cd backend && go run ./cmd/eval -suite all -judge

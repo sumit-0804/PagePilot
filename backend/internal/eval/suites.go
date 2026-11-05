@@ -34,12 +34,12 @@ func (r *Runner) Run(ctx context.Context, suite string) (SuiteResult, error) {
 	return SuiteResult{}, fmt.Errorf("unknown suite %q (choose from %s)", suite, strings.Join(SuiteNames, ", "))
 }
 
-// Retrieval: the real RetrieveMany over all five documents, scored against evidence strings.
+// Retrieval: the real RetrieveMany over every corpus document, scored against evidence strings.
 
 func (r *Runner) runRAG(ctx context.Context) SuiteResult {
-	var cases []CaseResult
-	for _, c := range r.Data.RAG {
-		cases = append(cases, r.traced(ctx, "rag", c.ID, []string{"recall_at_k", "mrr"}, func(ctx context.Context, _ string) CaseResult {
+	cases := r.runCases(len(r.Data.RAG), func(i int) CaseResult {
+		c := r.Data.RAG[i]
+		return r.traced(ctx, "rag", c.ID, []string{"recall_at_k", "mrr"}, func(ctx context.Context, _ string) CaseResult {
 			// Evidence split across two chunks can never be retrieved whole; that is a dataset problem.
 			for _, e := range c.Evidence {
 				if !slices.ContainsFunc(r.chunks[c.Doc], func(chunk string) bool { return Contains(chunk, e) }) {
@@ -68,8 +68,8 @@ func (r *Runner) runRAG(ctx context.Context) SuiteResult {
 				res.Problems = []string{fmt.Sprintf("no chunk with the evidence in the top %d", r.TopK)}
 			}
 			return res
-		}))
-	}
+		})
+	})
 	s := NewSuite("rag", cases)
 	for _, m := range []string{"recall_at_k", "precision_at_k", "mrr", "ndcg_at_k", "hit_at_k", "top1_doc"} {
 		if v, ok := MeanMetric(cases, m); ok {
@@ -83,26 +83,24 @@ func (r *Runner) runRAG(ctx context.Context) SuiteResult {
 // Tool selection: the real ADK agent and model; tool calls are read from its execute_tool spans.
 
 func (r *Runner) runTools(ctx context.Context) SuiteResult {
-	var cases []CaseResult
-	for i, c := range r.Data.Tools {
+	cases := r.runCases(len(r.Data.Tools), func(i int) CaseResult {
+		c := r.Data.Tools[i]
 		if c.Requires == "web" && !r.WebSearch {
-			cases = append(cases, CaseResult{ID: c.ID, Outcome: Skipped, Problems: []string{"web search is not configured"}})
-			continue
+			r.mark(Skipped)
+			return CaseResult{ID: c.ID, Outcome: Skipped, Problems: []string{"web search is not configured"}}
 		}
-		if i > 0 {
-			r.pause()
-		}
-		cases = append(cases, r.traced(ctx, "tools", c.ID, []string{"correct"}, func(ctx context.Context, traceID string) CaseResult {
+		return r.traced(ctx, "tools", c.ID, []string{"correct"}, func(ctx context.Context, traceID string) CaseResult {
 			conv, err := r.conversation(ctx, c.Docs)
 			if err != nil {
 				return ErrorResult(c.ID, traceID, err)
 			}
-			if _, err := r.Agent.Respond(ctx, services.ReplyRequest{UserID: r.user, Conversation: conv, Message: c.Message}, nil); err != nil {
+			if _, err := r.ToolAgent.Respond(ctx, services.ReplyRequest{UserID: r.user, Conversation: conv, Message: c.Message}, nil); err != nil {
 				return ErrorResult(c.ID, traceID, err)
 			}
 			return scoreTools(r.toolsCalled(traceID), c)
-		}))
-	}
+		})
+	})
+	zeroFailed(cases, "correct")
 	s := NewSuite("tools", cases)
 	if v, ok := MeanMetric(cases, "correct"); ok {
 		s.Aggregates["accuracy"] = v
@@ -151,22 +149,20 @@ func scoreTools(called []string, c ToolCase) CaseResult {
 	return res
 }
 
-// Answers and citations: the agent answers a document question with all five documents attached.
+// Answers and citations: the agent answers a document question with every corpus document attached.
 
 func (r *Runner) runAnswers(ctx context.Context) SuiteResult {
 	criteria := rubrics["answer"].criteria
 	scoreNames := append([]string{"citations_ok"}, prefixed("judge_", criteria)...)
-	var cases []CaseResult
-	first := true
+	var answerCases []RAGCase
 	for _, c := range r.Data.RAG {
-		if !c.Answer {
-			continue
+		if c.Answer {
+			answerCases = append(answerCases, c)
 		}
-		if !first {
-			r.pause()
-		}
-		first = false
-		cases = append(cases, r.traced(ctx, "answer", c.ID, scoreNames, func(ctx context.Context, traceID string) CaseResult {
+	}
+	cases := r.runCases(len(answerCases), func(i int) CaseResult {
+		c := answerCases[i]
+		return r.traced(ctx, "answer", c.ID, scoreNames, func(ctx context.Context, traceID string) CaseResult {
 			conv, err := r.conversation(ctx, sortedKeys(r.Data.Corpus))
 			if err != nil {
 				return ErrorResult(c.ID, traceID, err)
@@ -194,8 +190,9 @@ func (r *Runner) runAnswers(ctx context.Context) SuiteResult {
 				res.Outcome = Fail
 			}
 			return res
-		}))
-	}
+		})
+	})
+	zeroFailed(cases, "citations_ok")
 	s := NewSuite("answer", cases)
 	for _, m := range append([]string{"citations_ok", "citation_count"}, prefixed("judge_", criteria)...) {
 		if v, ok := MeanMetric(cases, m); ok {
@@ -228,12 +225,9 @@ func (r *Runner) citedPassages(ctx context.Context, citations []models.Citation)
 func (r *Runner) runQuiz(ctx context.Context) SuiteResult {
 	criteria := rubrics["quiz"].criteria
 	scoreNames := append([]string{"structure_ok"}, prefixed("judge_", criteria)...)
-	var cases []CaseResult
-	for i, c := range r.Data.Quiz {
-		if i > 0 {
-			r.pause()
-		}
-		cases = append(cases, r.traced(ctx, "quiz", c.ID, scoreNames, func(ctx context.Context, traceID string) CaseResult {
+	cases := r.runCases(len(r.Data.Quiz), func(i int) CaseResult {
+		c := r.Data.Quiz[i]
+		return r.traced(ctx, "quiz", c.ID, scoreNames, func(ctx context.Context, traceID string) CaseResult {
 			session, err := r.Quiz.GenerateQuiz(ctx, r.user, services.GenerateQuizRequest{
 				DocumentID: r.docIDs[c.Doc], Topic: c.Topic, Difficulty: c.Difficulty, NumQuestions: c.Count,
 			})
@@ -258,8 +252,9 @@ func (r *Runner) runQuiz(ctx context.Context) SuiteResult {
 				res.Outcome = Fail
 			}
 			return res
-		}))
-	}
+		})
+	})
+	zeroFailed(cases, "structure_ok")
 	s := NewSuite("quiz", cases)
 	for _, m := range append([]string{"structure_ok"}, prefixed("judge_", criteria)...) {
 		if v, ok := MeanMetric(cases, m); ok {
@@ -292,12 +287,9 @@ func (r *Runner) quizQuestions(ctx context.Context, sessionID string) ([]QuizQue
 func (r *Runner) runFlashcards(ctx context.Context) SuiteResult {
 	criteria := rubrics["flashcards"].criteria
 	scoreNames := append([]string{"structure_ok"}, prefixed("judge_", criteria)...)
-	var cases []CaseResult
-	for i, c := range r.Data.Flashcards {
-		if i > 0 {
-			r.pause()
-		}
-		cases = append(cases, r.traced(ctx, "flashcards", c.ID, scoreNames, func(ctx context.Context, traceID string) CaseResult {
+	cases := r.runCases(len(r.Data.Flashcards), func(i int) CaseResult {
+		c := r.Data.Flashcards[i]
+		return r.traced(ctx, "flashcards", c.ID, scoreNames, func(ctx context.Context, traceID string) CaseResult {
 			set, err := r.Cards.GenerateFlashcards(ctx, r.user, services.GenerateFlashcardsRequest{
 				DocumentID: r.docIDs[c.Doc], Topic: c.Topic, Count: c.Count,
 			})
@@ -322,8 +314,9 @@ func (r *Runner) runFlashcards(ctx context.Context) SuiteResult {
 				res.Outcome = Fail
 			}
 			return res
-		}))
-	}
+		})
+	})
+	zeroFailed(cases, "structure_ok")
 	s := NewSuite("flashcards", cases)
 	for _, m := range append([]string{"structure_ok"}, prefixed("judge_", criteria)...) {
 		if v, ok := MeanMetric(cases, m); ok {

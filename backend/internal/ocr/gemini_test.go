@@ -33,8 +33,8 @@ func pageCount(t *testing.T, data []byte) int {
 	return n
 }
 
-func newTestOCR(pagesPerCall int, call readCall) *GeminiOCR {
-	g := newGeminiOCR(GeminiConfig{Model: "test", RPM: 1000, TPM: 1_000_000, RPD: 1000, PagesPerCall: pagesPerCall}, call)
+func newTestOCR(pagesPerCall int, calls ...readCall) *GeminiOCR {
+	g := newGeminiOCR(GeminiConfig{Model: "test", RPM: 1000, TPM: 1_000_000, RPD: 1000, PagesPerCall: pagesPerCall}, calls...)
 	g.sleep = func(context.Context, time.Duration) error { return nil }
 	return g
 }
@@ -117,6 +117,55 @@ func TestOverloadedServerIsRetried(t *testing.T) {
 	})
 	if _, err := g.Recognize(context.Background(), readFixture(t), []int{1}); err != nil || attempts != 2 {
 		t.Fatalf("expected success on the second attempt, got attempts=%d err=%v", attempts, err)
+	}
+}
+
+// failing always returns err and counts its calls.
+func failing(err error, calls *int) readCall {
+	return func(context.Context, []byte, int) ([]string, bool, error) {
+		*calls++
+		return nil, false, err
+	}
+}
+
+func TestSecondKeyTakesOver(t *testing.T) {
+	dailyQuota := genai.APIError{Code: 429, Message: "Quota exceeded for metric GenerateRequestsPerDayPerProjectPerModel"}
+	for name, err := range map[string]error{
+		"daily quota": dailyQuota,
+		"outage":      genai.APIError{Code: 503, Message: "The model is overloaded"},
+		"rejected":    genai.APIError{Code: 403, Message: "API key not valid"},
+	} {
+		var first, second int
+		g := newTestOCR(10, failing(err, &first), func(_ context.Context, _ []byte, n int) ([]string, bool, error) {
+			second++
+			return make([]string, n), false, nil
+		})
+		if _, err := g.Recognize(context.Background(), readFixture(t), []int{1}); err != nil || second != 1 {
+			t.Errorf("%s: key 2 should read the page, got err %v after %d key-2 calls", name, err, second)
+		}
+		if name == "daily quota" {
+			// Key 1 stays marked as used up, so the next document goes straight to key 2.
+			if _, err := g.Recognize(context.Background(), readFixture(t), []int{1}); err != nil || first != 1 || second != 2 {
+				t.Errorf("after the daily quota, key 1 should not be called again: %d, %d, %v", first, second, err)
+			}
+		}
+	}
+}
+
+func TestEveryKeyOutOfQuota(t *testing.T) {
+	dailyQuota := genai.APIError{Code: 429, Message: "Quota exceeded for metric GenerateRequestsPerDayPerProjectPerModel"}
+	var a, b int
+	g := newTestOCR(10, failing(dailyQuota, &a), failing(dailyQuota, &b))
+	if _, err := g.Recognize(context.Background(), readFixture(t), []int{1}); !errors.Is(err, ErrDailyQuota) || a != 1 || b != 1 {
+		t.Fatalf("expected ErrDailyQuota after trying both keys, got %v (%d, %d calls)", err, a, b)
+	}
+}
+
+func TestBadRequestDoesNotSwitchKeys(t *testing.T) {
+	var first, second int
+	g := newTestOCR(10, failing(genai.APIError{Code: 400, Message: "invalid PDF"}, &first), failing(nil, &second))
+	if _, err := g.Recognize(context.Background(), readFixture(t), []int{1}); err == nil || second != 0 {
+		t.Fatalf("a request any key would reject must not go to key 2: err %v, key-2 calls %d", err, second)
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"log"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -29,13 +30,19 @@ type Env struct {
 	Cards     *services.FlashcardService
 	Chat      *services.ChatService
 	Agent     services.Responder
+	ToolAgent services.Responder            // the agent with content-generating tools stubbed out
 	Judge     *Judge                        // nil when judging is off
 	Langfuse  *observability.LangfuseClient // nil when Langfuse is not configured
-	Spans     *tracetest.SpanRecorder       // sees every span, so tool calls can be read back
+	Spans     *tracetest.SpanRecorder       // sees every span, so tool calls and token usage can be read back
 	WebSearch bool                          // whether the agent has the web_search tool
 	RunID     string
 	TopK      int
-	CaseDelay time.Duration // pause between LLM-heavy cases, to stay within provider rate limits
+	// Concurrency is how many cases run at once; the model clients retry rate limits.
+	Concurrency int
+	// Limit runs only the first N cases of each suite (0 = all), for cheap smoke runs.
+	Limit int
+	// MaxTokens stops starting LLM cases once any one model has used this many tokens in the run (0 = no cap).
+	MaxTokens int
 	Out       io.Writer
 }
 
@@ -46,6 +53,7 @@ type Runner struct {
 	user   string
 	docIDs map[string]string   // corpus key -> document id
 	chunks map[string][]string // corpus key -> indexed chunk texts
+	outMu  sync.Mutex
 }
 
 func NewRunner(env Env, data *Data) *Runner {
@@ -54,6 +62,10 @@ func NewRunner(env Env, data *Data) *Runner {
 
 // Setup creates the eval user and ingests the corpus through the real document pipeline.
 func (r *Runner) Setup(ctx context.Context) error {
+	// Users left by runs that were killed before Cleanup.
+	if err := r.DB.WithContext(ctx).Exec("delete from auth.users where email like 'eval-%@pagepilot.test'").Error; err != nil {
+		return fmt.Errorf("removing old eval users: %w", err)
+	}
 	r.user = uuid.NewString()
 	err := r.DB.WithContext(ctx).Exec(`insert into auth.users (id, instance_id, aud, role, email, created_at, updated_at)
 		values (?, '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated', ?, now(), now())`,
@@ -138,6 +150,11 @@ func (r *Runner) corpusIDs() map[string]bool {
 // traced runs one case as its own trace (exported to Langfuse when configured), then sends the
 // case's chosen metrics to it as scores.
 func (r *Runner) traced(ctx context.Context, suite, caseID string, scoreNames []string, run func(ctx context.Context, traceID string) CaseResult) CaseResult {
+	if suite != "rag" && r.overBudget() {
+		res := CaseResult{ID: caseID, Outcome: Skipped, Problems: []string{fmt.Sprintf("a model reached the run's budget of %d tokens", r.MaxTokens)}}
+		r.mark(res.Outcome)
+		return res
+	}
 	ctx = observability.WithTraceAttributes(ctx,
 		observability.AttrSessionID.String("eval-"+r.RunID),
 		observability.AttrTraceTags.StringSlice([]string{"eval", "suite:" + suite}),
@@ -161,9 +178,68 @@ func (r *Runner) traced(ctx context.Context, suite, caseID string, scoreNames []
 			}
 		}
 	}
-	mark := map[Outcome]string{Pass: ".", Fail: "F", Error: "E", Skipped: "s"}[res.Outcome]
-	fmt.Fprint(r.Out, mark)
+	r.mark(res.Outcome)
 	return res
+}
+
+// mark prints one progress character per finished case.
+func (r *Runner) mark(o Outcome) {
+	r.outMu.Lock()
+	defer r.outMu.Unlock()
+	fmt.Fprint(r.Out, map[Outcome]string{Pass: ".", Fail: "F", Error: "E", Skipped: "s"}[o])
+}
+
+// runCases runs fn for cases 0..n-1, at most Concurrency at a time, keeping results in case order.
+func (r *Runner) runCases(n int, fn func(i int) CaseResult) []CaseResult {
+	if r.Limit > 0 {
+		n = min(n, r.Limit)
+	}
+	out := make([]CaseResult, n)
+	slots := make(chan struct{}, max(1, r.Concurrency))
+	var wg sync.WaitGroup
+	for i := range n {
+		slots <- struct{}{}
+		wg.Add(1)
+		go func() {
+			defer func() { <-slots; wg.Done() }()
+			out[i] = fn(i)
+		}()
+	}
+	wg.Wait()
+	return out
+}
+
+// TokensUsed sums the input and output tokens each model reported in this run. Groq's daily limits
+// are per model, so the budget is too.
+func (r *Runner) TokensUsed() map[string]int {
+	used := map[string]int{}
+	for _, s := range r.Spans.Ended() {
+		model, tokens := "unknown", 0
+		for _, kv := range s.Attributes() {
+			switch kv.Key {
+			case observability.AttrGenAIRequestModel:
+				model = kv.Value.AsString()
+			case observability.AttrGenAIInputTokens, observability.AttrGenAIOutputTokens:
+				tokens += int(kv.Value.AsInt64())
+			}
+		}
+		if tokens > 0 {
+			used[model] += tokens
+		}
+	}
+	return used
+}
+
+func (r *Runner) overBudget() bool {
+	if r.MaxTokens <= 0 {
+		return false
+	}
+	for _, n := range r.TokensUsed() {
+		if n >= r.MaxTokens {
+			return true
+		}
+	}
+	return false
 }
 
 // toolsCalled reads the agent's tool calls from ADK's execute_tool spans in one trace.
@@ -177,12 +253,6 @@ func (r *Runner) toolsCalled(traceID string) []string {
 		}
 	}
 	return tools
-}
-
-func (r *Runner) pause() {
-	if r.CaseDelay > 0 {
-		time.Sleep(r.CaseDelay)
-	}
 }
 
 // conversation creates a chat with the given corpus documents attached, loaded as the agent sees it.
