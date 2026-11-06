@@ -1,0 +1,1100 @@
+{
+  "dataset_version": "3eccce41dca1",
+  "started_at": "2026-11-06T14:41:21.3380903Z",
+  "finished_at": "2026-11-06T14:52:46.8098811Z",
+  "git_commit": "70f9dfea396f",
+  "models": {
+    "agent": "openai/gpt-oss-120b",
+    "embeddings": "@cf/qwen/qwen3-embedding-0.6b",
+    "judge": "qwen/qwen3.8-27b"
+  },
+  "prompt_versions": {
+    "answer": "answer.v1.md",
+    "flashcards": "flashcards.v1.md",
+    "quiz": "quiz.v1.md"
+  },
+  "judge": true,
+  "tokens": {
+    "openai/gpt-oss-120b": 100014,
+    "qwen/qwen3.8-27b": 36626
+  },
+  "baseline_like_for_like": false,
+  "suites": [
+    {
+      "name": "rag",
+      "status": "ok",
+      "counts": {
+        "pass": 40
+      },
+      "aggregates": {
+        "hit_at_k": 1,
+        "mrr": 0.94375,
+        "ndcg_at_k": 0.9387440051079672,
+        "precision_at_k": 0.2000000000000001,
+        "recall_at_k": 1,
+        "top1_doc": 1
+      },
+      "notes": [
+        "k = 5, searching all 4 corpus documents at once"
+      ],
+      "cases": [
+        {
+          "id": "rag-cell-01",
+          "outcome": "pass",
+          "metrics": {
+            "hit_at_k": 1,
+            "mrr": 1,
+            "ndcg_at_k": 1,
+            "precision_at_k": 0.2,
+            "recall_at_k": 1,
+            "top1_doc": 1
+          },
+          "trace_id": "b9dc12af5287d67689973f63c64af8d4"
+        },
+        {
+          "id": "rag-cell-02",
+          "outcome": "pass",
+          "metrics": {
+            "hit_at_k": 1,
+            "mrr": 1,
+            "ndcg_at_k": 1,
+            "precision_at_k": 0.2,
+            "recall_at_k": 1,
+            "top1_doc": 1
+          },
+          "trace_id": "595136d31306a43f40a11259d71e6430"
+        },
+        {
+          "id": "rag-cell-03",
+          "outcome": "pass",
+          "metrics": {
+            "hit_at_k": 1,
+            "mrr": 1,
+            "ndcg_at_k": 1,
+            "precision_at_k": 0.2,
+            "recall_at_k": 1,
+            "top1_doc": 1
+          },
+          "trace_id": "e10290c3df5d402eaf730069ca0a86c9"
+        },
+        {
+          "id": "rag-cell-04",
+          "outcome": "pass",
+          "metrics": {
+            "hit_at_k": 1,
+            "mrr": 1,
+            "ndcg_at_k": 1,
+            "precision_at_k": 0.2,
+            "recall_at_k": 1,
+            "top1_doc": 1
+          },
+          "trace_id": "7367576a2bd5859882aebd00efe7777a"
+        },
+        {
+          "id": "rag-cell-05",
+          "outcome": "pass",
+          "metrics": {
+            "hit_at_k": 1,
+            "mrr": 1,
+            "ndcg_at_k": 1,
+            "precision_at_k": 0.2,
+            "recall_at_k": 1,
+            "top1_doc": 1
+          },
+          "trace_id": "bd2e0939b93a00c1904a599cbbc5575e"
+        },
+        {
+          "id": "rag-cell-06",
+          "outcome": "pass",
+          "metrics": {
+            "hit_at_k": 1,
+            "mrr": 1,
+            "ndcg_at_k": 1,
+            "precision_at_k": 0.2,
+            "recall_at_k": 1,
+            "top1_doc": 1
+          },
+          "trace_id": "da75c93f9ab874b5939a9c2447a83451"
+        },
+        {
+          "id": "rag-cell-07",
+          "outcome": "pass",
+          "metrics": {
+            "hit_at_k": 1,
+            "mrr": 1,
+            "ndcg_at_k": 1,
+            "precision_at_k": 0.2,
+            "recall_at_k": 1,
+            "top1_doc": 1
+          },
+          "trace_id": "a32e699d8b3421a5937f81c0c1778459"
+        },
+        {
+          "id": "rag-cell-08",
+          "outcome": "pass",
+          "metrics": {
+            "hit_at_k": 1,
+            "mrr": 1,
+            "ndcg_at_k": 1,
+            "precision_at_k": 0.2,
+            "recall_at_k": 1,
+            "top1_doc": 1
+          },
+          "trace_id": "1b20c16ff338832f943d35f20ff9efaa"
+        },
+        {
+          "id": "rag-cell-09",
+          "outcome": "pass",
+          "metrics": {
+            "hit_at_k": 1,
+            "mrr": 1,
+            "ndcg_at_k": 0.6131471927654585,
+            "precision_at_k": 0.2,
+            "recall_at_k": 1,
+            "top1_doc": 1
+          },
+          "trace_id": "06321e841ba83d7303827882e41c0377"
+        },
+        {
+          "id": "rag-cell-10",
+          "outcome": "pass",
+          "metrics": {
+            "hit_at_k": 1,
+            "mrr": 1,
+            "ndcg_at_k": 1,
+            "precision_at_k": 0.2,
+            "recall_at_k": 1,
+            "top1_doc": 1
+          },
+          "trace_id": "68b10219c0c0eb11cbed797759fbb415"
+        },
+        {
+          "id": "rag-net-01",
+          "outcome": "pass",
+          "metrics": {
+            "hit_at_k": 1,
+            "mrr": 1,
+            "ndcg_at_k": 1,
+            "precision_at_k": 0.2,
+            "recall_at_k": 1,
+            "top1_doc": 1
+          },
+          "trace_id": "b1882e8f4d68142b35fb4de3a5107068"
+        },
+        {
+          "id": "rag-net-02",
+          "outcome": "pass",
+          "metrics": {
+            "hit_at_k": 1,
+            "mrr": 1,
+            "ndcg_at_k": 1,
+            "precision_at_k": 0.2,
+            "recall_at_k": 1,
+            "top1_doc": 1
+          },
+          "trace_id": "8c38dc12b21c7a83756e5c5e53a19969"
+        },
+        {
+          "id": "rag-net-03",
+          "outcome": "pass",
+          "metrics": {
+            "hit_at_k": 1,
+            "mrr": 1,
+            "ndcg_at_k": 0.6131471927654585,
+            "precision_at_k": 0.2,
+            "recall_at_k": 1,
+            "top1_doc": 1
+          },
+          "trace_id": "2a0ec660c384e75e0b08b85483f74359"
+        },
+        {
+          "id": "rag-net-04",
+          "outcome": "pass",
+          "metrics": {
+            "hit_at_k": 1,
+            "mrr": 1,
+            "ndcg_at_k": 1,
+            "precision_at_k": 0.2,
+            "recall_at_k": 1,
+            "top1_doc": 1
+          },
+          "trace_id": "47c2f0cfd676b3a6c6b04343cbbf4700"
+        },
+        {
+          "id": "rag-net-05",
+          "outcome": "pass",
+          "metrics": {
+            "hit_at_k": 1,
+            "mrr": 1,
+            "ndcg_at_k": 1,
+            "precision_at_k": 0.2,
+            "recall_at_k": 1,
+            "top1_doc": 1
+          },
+          "trace_id": "79dacde1bbd7db0b9b74398ebe6e41a7"
+        },
+        {
+          "id": "rag-net-06",
+          "outcome": "pass",
+          "metrics": {
+            "hit_at_k": 1,
+            "mrr": 1,
+            "ndcg_at_k": 1,
+            "precision_at_k": 0.2,
+            "recall_at_k": 1,
+            "top1_doc": 1
+          },
+          "trace_id": "236def9937177ef6bde9b36724dfdcc5"
+        },
+        {
+          "id": "rag-net-07",
+          "outcome": "pass",
+          "metrics": {
+            "hit_at_k": 1,
+            "mrr": 0.5,
+            "ndcg_at_k": 0.6309297535714574,
+            "precision_at_k": 0.2,
+            "recall_at_k": 1,
+            "top1_doc": 1
+          },
+          "trace_id": "25f8cef8bda4964298b4ec1697b3d6c3"
+        },
+        {
+          "id": "rag-net-08",
+          "outcome": "pass",
+          "metrics": {
+            "hit_at_k": 1,
+            "mrr": 1,
+            "ndcg_at_k": 1,
+            "precision_at_k": 0.2,
+            "recall_at_k": 1,
+            "top1_doc": 1
+          },
+          "trace_id": "28b7426434a32706e66e704d2aba0554"
+        },
+        {
+          "id": "rag-net-09",
+          "outcome": "pass",
+          "metrics": {
+            "hit_at_k": 1,
+            "mrr": 1,
+            "ndcg_at_k": 1,
+            "precision_at_k": 0.2,
+            "recall_at_k": 1,
+            "top1_doc": 1
+          },
+          "trace_id": "61ca4d97be6dc0d867fc08e6c35014ab"
+        },
+        {
+          "id": "rag-net-10",
+          "outcome": "pass",
+          "metrics": {
+            "hit_at_k": 1,
+            "mrr": 1,
+            "ndcg_at_k": 1,
+            "precision_at_k": 0.2,
+            "recall_at_k": 1,
+            "top1_doc": 1
+          },
+          "trace_id": "1322fd51e6b83f286d412bf45b06185e"
+        },
+        {
+          "id": "rag-fr-01",
+          "outcome": "pass",
+          "metrics": {
+            "hit_at_k": 1,
+            "mrr": 0.5,
+            "ndcg_at_k": 0.6309297535714574,
+            "precision_at_k": 0.2,
+            "recall_at_k": 1,
+            "top1_doc": 1
+          },
+          "trace_id": "e0930be3495e9437c76d7a7ed3e5ed9a"
+        },
+        {
+          "id": "rag-fr-02",
+          "outcome": "pass",
+          "metrics": {
+            "hit_at_k": 1,
+            "mrr": 1,
+            "ndcg_at_k": 1,
+            "precision_at_k": 0.2,
+            "recall_at_k": 1,
+            "top1_doc": 1
+          },
+          "trace_id": "1471ef43cf5c072c8575760465172092"
+        },
+        {
+          "id": "rag-fr-03",
+          "outcome": "pass",
+          "metrics": {
+            "hit_at_k": 1,
+            "mrr": 1,
+            "ndcg_at_k": 1,
+            "precision_at_k": 0.2,
+            "recall_at_k": 1,
+            "top1_doc": 1
+          },
+          "trace_id": "b2eaed98eb2f8a7a744ae4306e1a9c67"
+        },
+        {
+          "id": "rag-fr-04",
+          "outcome": "pass",
+          "metrics": {
+            "hit_at_k": 1,
+            "mrr": 1,
+            "ndcg_at_k": 1,
+            "precision_at_k": 0.2,
+            "recall_at_k": 1,
+            "top1_doc": 1
+          },
+          "trace_id": "e27bb4573229891959e13fc378c151ff"
+        },
+        {
+          "id": "rag-fr-05",
+          "outcome": "pass",
+          "metrics": {
+            "hit_at_k": 1,
+            "mrr": 1,
+            "ndcg_at_k": 1,
+            "precision_at_k": 0.2,
+            "recall_at_k": 1,
+            "top1_doc": 1
+          },
+          "trace_id": "4662fbb1da0df7faa040bb966809cc83"
+        },
+        {
+          "id": "rag-fr-06",
+          "outcome": "pass",
+          "metrics": {
+            "hit_at_k": 1,
+            "mrr": 1,
+            "ndcg_at_k": 1,
+            "precision_at_k": 0.2,
+            "recall_at_k": 1,
+            "top1_doc": 1
+          },
+          "trace_id": "42027d45d464c74fe7712963ac0777c2"
+        },
+        {
+          "id": "rag-fr-07",
+          "outcome": "pass",
+          "metrics": {
+            "hit_at_k": 1,
+            "mrr": 1,
+            "ndcg_at_k": 1,
+            "precision_at_k": 0.2,
+            "recall_at_k": 1,
+            "top1_doc": 1
+          },
+          "trace_id": "b37de6be3ee076caa2a2e98db7bab348"
+        },
+        {
+          "id": "rag-fr-08",
+          "outcome": "pass",
+          "metrics": {
+            "hit_at_k": 1,
+            "mrr": 0.5,
+            "ndcg_at_k": 0.6309297535714574,
+            "precision_at_k": 0.2,
+            "recall_at_k": 1,
+            "top1_doc": 1
+          },
+          "trace_id": "0e2c943d0c8adf8f472a775c262bc988"
+        },
+        {
+          "id": "rag-fr-09",
+          "outcome": "pass",
+          "metrics": {
+            "hit_at_k": 1,
+            "mrr": 1,
+            "ndcg_at_k": 1,
+            "precision_at_k": 0.2,
+            "recall_at_k": 1,
+            "top1_doc": 1
+          },
+          "trace_id": "d6ce6a56749514ef9db7087dcfecdd8f"
+        },
+        {
+          "id": "rag-fr-10",
+          "outcome": "pass",
+          "metrics": {
+            "hit_at_k": 1,
+            "mrr": 0.25,
+            "ndcg_at_k": 0.43067655807339306,
+            "precision_at_k": 0.2,
+            "recall_at_k": 1,
+            "top1_doc": 1
+          },
+          "trace_id": "e1c12544f69faab959925cf9ee9a3164"
+        },
+        {
+          "id": "rag-lr-01",
+          "outcome": "pass",
+          "metrics": {
+            "hit_at_k": 1,
+            "mrr": 1,
+            "ndcg_at_k": 1,
+            "precision_at_k": 0.2,
+            "recall_at_k": 1,
+            "top1_doc": 1
+          },
+          "trace_id": "df8d153fbbd1a48a4b9cb90b46b7da73"
+        },
+        {
+          "id": "rag-lr-02",
+          "outcome": "pass",
+          "metrics": {
+            "hit_at_k": 1,
+            "mrr": 1,
+            "ndcg_at_k": 1,
+            "precision_at_k": 0.2,
+            "recall_at_k": 1,
+            "top1_doc": 1
+          },
+          "trace_id": "721ad22c86a2d259e52d54ad2f2f7bfb"
+        },
+        {
+          "id": "rag-lr-03",
+          "outcome": "pass",
+          "metrics": {
+            "hit_at_k": 1,
+            "mrr": 1,
+            "ndcg_at_k": 1,
+            "precision_at_k": 0.2,
+            "recall_at_k": 1,
+            "top1_doc": 1
+          },
+          "trace_id": "3f296d1c66683097e962e6ab32a6c320"
+        },
+        {
+          "id": "rag-lr-04",
+          "outcome": "pass",
+          "metrics": {
+            "hit_at_k": 1,
+            "mrr": 1,
+            "ndcg_at_k": 1,
+            "precision_at_k": 0.2,
+            "recall_at_k": 1,
+            "top1_doc": 1
+          },
+          "trace_id": "722fc97fb1c886ac7ce02b151775ab5e"
+        },
+        {
+          "id": "rag-lr-05",
+          "outcome": "pass",
+          "metrics": {
+            "hit_at_k": 1,
+            "mrr": 1,
+            "ndcg_at_k": 1,
+            "precision_at_k": 0.2,
+            "recall_at_k": 1,
+            "top1_doc": 1
+          },
+          "trace_id": "79b875e79895793459e95705be372cb4"
+        },
+        {
+          "id": "rag-lr-06",
+          "outcome": "pass",
+          "metrics": {
+            "hit_at_k": 1,
+            "mrr": 1,
+            "ndcg_at_k": 1,
+            "precision_at_k": 0.2,
+            "recall_at_k": 1,
+            "top1_doc": 1
+          },
+          "trace_id": "d468aca76af392a41196493441877ca7"
+        },
+        {
+          "id": "rag-lr-07",
+          "outcome": "pass",
+          "metrics": {
+            "hit_at_k": 1,
+            "mrr": 1,
+            "ndcg_at_k": 1,
+            "precision_at_k": 0.2,
+            "recall_at_k": 1,
+            "top1_doc": 1
+          },
+          "trace_id": "016ce7d3e70cacba856f75f1d92f6957"
+        },
+        {
+          "id": "rag-lr-08",
+          "outcome": "pass",
+          "metrics": {
+            "hit_at_k": 1,
+            "mrr": 1,
+            "ndcg_at_k": 1,
+            "precision_at_k": 0.2,
+            "recall_at_k": 1,
+            "top1_doc": 1
+          },
+          "trace_id": "b6844ca03fb665392f435f95ffcc7226"
+        },
+        {
+          "id": "rag-lr-09",
+          "outcome": "pass",
+          "metrics": {
+            "hit_at_k": 1,
+            "mrr": 1,
+            "ndcg_at_k": 1,
+            "precision_at_k": 0.2,
+            "recall_at_k": 1,
+            "top1_doc": 1
+          },
+          "trace_id": "1a84b10055c632c9a8da9d1ccfdeed18"
+        },
+        {
+          "id": "rag-lr-10",
+          "outcome": "pass",
+          "metrics": {
+            "hit_at_k": 1,
+            "mrr": 1,
+            "ndcg_at_k": 1,
+            "precision_at_k": 0.2,
+            "recall_at_k": 1,
+            "top1_doc": 1
+          },
+          "trace_id": "2c9358d084a2248940a54238003c4885"
+        }
+      ]
+    },
+    {
+      "name": "tools",
+      "status": "ok",
+      "counts": {
+        "pass": 8
+      },
+      "aggregates": {
+        "accuracy": 1,
+        "missing_total": 0,
+        "unnecessary_total": 0,
+        "wrong_total": 0
+      },
+      "cases": [
+        {
+          "id": "tool-list-02",
+          "outcome": "pass",
+          "metrics": {
+            "correct": 1,
+            "missing": 0,
+            "unnecessary": 0,
+            "wrong": 0
+          },
+          "trace_id": "25b0cc592779b47f2a84a01b5173ef5c",
+          "details": {
+            "called": [
+              "list_documents"
+            ]
+          }
+        },
+        {
+          "id": "tool-search-02",
+          "outcome": "pass",
+          "metrics": {
+            "correct": 1,
+            "missing": 0,
+            "unnecessary": 0,
+            "wrong": 0
+          },
+          "trace_id": "a54fdf344198dca479326ea85046eed6",
+          "details": {
+            "called": [
+              "search_documents"
+            ]
+          }
+        },
+        {
+          "id": "tool-quiz-01",
+          "outcome": "pass",
+          "metrics": {
+            "correct": 1,
+            "missing": 0,
+            "unnecessary": 0,
+            "wrong": 0
+          },
+          "trace_id": "fc8eb2b71de531badaa23a743f247885",
+          "details": {
+            "called": [
+              "create_quiz",
+              "create_quiz",
+              "create_quiz",
+              "create_quiz",
+              "create_quiz",
+              "search_documents"
+            ]
+          }
+        },
+        {
+          "id": "tool-cards-02",
+          "outcome": "pass",
+          "metrics": {
+            "correct": 1,
+            "missing": 0,
+            "unnecessary": 0,
+            "wrong": 0
+          },
+          "trace_id": "32ca05aa6b036cea93de4f4d8aead6dc",
+          "details": {
+            "called": [
+              "create_flashcards"
+            ]
+          }
+        },
+        {
+          "id": "tool-sum-02",
+          "outcome": "pass",
+          "metrics": {
+            "correct": 1,
+            "missing": 0,
+            "unnecessary": 0,
+            "wrong": 0
+          },
+          "trace_id": "5771dc1857659b9e89881e7486f6211a",
+          "details": {
+            "called": [
+              "summarize_document",
+              "summarize_document",
+              "list_documents",
+              "search_documents"
+            ]
+          }
+        },
+        {
+          "id": "tool-progress-01",
+          "outcome": "pass",
+          "metrics": {
+            "correct": 1,
+            "missing": 0,
+            "unnecessary": 0,
+            "wrong": 0
+          },
+          "trace_id": "facee4b78c70b5a81861a20c9784fbf1",
+          "details": {
+            "called": [
+              "get_study_progress"
+            ]
+          }
+        },
+        {
+          "id": "tool-none-02",
+          "outcome": "pass",
+          "metrics": {
+            "correct": 1,
+            "missing": 0,
+            "unnecessary": 0,
+            "wrong": 0
+          },
+          "trace_id": "adf291122aee86d3a99c79828f7a5325",
+          "details": {
+            "called": null
+          }
+        },
+        {
+          "id": "tool-web-01",
+          "outcome": "pass",
+          "metrics": {
+            "correct": 1,
+            "missing": 0,
+            "unnecessary": 0,
+            "wrong": 0
+          },
+          "trace_id": "44c700ba89c40bbaee3980e7d566a887",
+          "details": {
+            "called": [
+              "web_search"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "answer",
+      "status": "ok",
+      "counts": {
+        "pass": 8
+      },
+      "aggregates": {
+        "citation_count": 1,
+        "citations_ok": 1,
+        "judge_citation_support": 5,
+        "judge_completeness": 5,
+        "judge_correctness": 5,
+        "judge_groundedness": 4.75,
+        "judge_relevance": 5
+      },
+      "cases": [
+        {
+          "id": "rag-cell-01",
+          "outcome": "pass",
+          "metrics": {
+            "citation_count": 1,
+            "citations_ok": 1,
+            "judge_citation_support": 5,
+            "judge_completeness": 5,
+            "judge_correctness": 5,
+            "judge_groundedness": 5,
+            "judge_relevance": 5
+          },
+          "trace_id": "a7c17ac23db62183e34d16a4120b1917",
+          "details": {
+            "answer": "Robert Hooke coined the term “cell” in 1665 after examining thin slices of cork with a simple microscope[1].",
+            "citations": 1
+          }
+        },
+        {
+          "id": "rag-cell-03",
+          "outcome": "pass",
+          "metrics": {
+            "citation_count": 1,
+            "citations_ok": 1,
+            "judge_citation_support": 5,
+            "judge_completeness": 5,
+            "judge_correctness": 5,
+            "judge_groundedness": 5,
+            "judge_relevance": 5
+          },
+          "trace_id": "e88a459eac1a79807310da82114394f1",
+          "details": {
+            "answer": "The bacterial DNA is not enclosed in a membrane‑bound nucleus; it resides in a dense area of the cytoplasm called the **nucleoid**[1].",
+            "citations": 1
+          }
+        },
+        {
+          "id": "rag-net-01",
+          "outcome": "pass",
+          "metrics": {
+            "citation_count": 1,
+            "citations_ok": 1,
+            "judge_citation_support": 5,
+            "judge_completeness": 5,
+            "judge_correctness": 5,
+            "judge_groundedness": 5,
+            "judge_relevance": 5
+          },
+          "trace_id": "2c9c7748a14ffb356be6f8c9a14e524b",
+          "details": {
+            "answer": "The TCP/IP model has **four layers**: the **link layer**, the **internet layer**, the **transport layer**, and the **application layer**[1].",
+            "citations": 1
+          }
+        },
+        {
+          "id": "rag-net-04",
+          "outcome": "pass",
+          "metrics": {
+            "citation_count": 1,
+            "citations_ok": 1,
+            "judge_citation_support": 5,
+            "judge_completeness": 5,
+            "judge_correctness": 5,
+            "judge_groundedness": 3,
+            "judge_relevance": 5
+          },
+          "trace_id": "53295a862a82dc68c2993a22d2a445e3",
+          "details": {
+            "answer": "TCP opens a connection with a three‑way handshake:\n\n1. **SYN** – The client sends a segment with the SYN flag set and an initial sequence number (ISN) to the server.  \n2. **SYN‑ACK** – The server replies with a segment that has both SYN and ACK flags set; it includes its own ISN and acknowledges the client’s ISN.  \n3. **ACK** – The client sends a final ACK segment acknowledging the server’s ISN.  \n\nAfter this exchange the connection is established and data can be transferred[[1]].",
+            "citations": 1
+          }
+        },
+        {
+          "id": "rag-fr-01",
+          "outcome": "pass",
+          "metrics": {
+            "citation_count": 1,
+            "citations_ok": 1,
+            "judge_citation_support": 5,
+            "judge_completeness": 5,
+            "judge_correctness": 5,
+            "judge_groundedness": 5,
+            "judge_relevance": 5
+          },
+          "trace_id": "8f3fe50e416f2abaa25106056ade82b4",
+          "details": {
+            "answer": "Before the Revolution, French society was organized into three distinct estates. The First Estate comprised the clergy, the Second Estate the nobility, and the Third Estate included everyone else—by far the largest group, which bore most of the tax burden while the clergy and nobles enjoyed extensive privileges[1].",
+            "citations": 1
+          }
+        },
+        {
+          "id": "rag-fr-04",
+          "outcome": "pass",
+          "metrics": {
+            "citation_count": 1,
+            "citations_ok": 1,
+            "judge_citation_support": 5,
+            "judge_completeness": 5,
+            "judge_correctness": 5,
+            "judge_groundedness": 5,
+            "judge_relevance": 5
+          },
+          "trace_id": "bed75f1dfcf087c6ed53c2b834ea0d55",
+          "details": {
+            "answer": "The deputies swore that they would not separate or give up their meeting until France had a constitution. [1]",
+            "citations": 1
+          }
+        },
+        {
+          "id": "rag-lr-01",
+          "outcome": "pass",
+          "metrics": {
+            "citation_count": 1,
+            "citations_ok": 1,
+            "judge_citation_support": 5,
+            "judge_completeness": 5,
+            "judge_correctness": 5,
+            "judge_groundedness": 5,
+            "judge_relevance": 5
+          },
+          "trace_id": "9971050149d784712eaae61cb9f7fc96",
+          "details": {
+            "answer": "In a simple linear regression \\(y = b_0 + b_1x\\), the **intercept** \\(b_0\\) is the predicted value of \\(y\\) when the predictor \\(x\\) equals zero, and the **slope** \\(b_1\\) is the expected change in \\(y\\) for each one‑unit increase in \\(x\\) [1].",
+            "citations": 1
+          }
+        },
+        {
+          "id": "rag-lr-03",
+          "outcome": "pass",
+          "metrics": {
+            "citation_count": 1,
+            "citations_ok": 1,
+            "judge_citation_support": 5,
+            "judge_completeness": 5,
+            "judge_correctness": 5,
+            "judge_groundedness": 5,
+            "judge_relevance": 5
+          },
+          "trace_id": "e53ba6fd7cd76c2fd44b06c450006b67",
+          "details": {
+            "answer": "Ordinary least squares (OLS) finds the line \\(y = b_0 + b_1x\\) whose slope \\(b_1\\) and intercept \\(b_0\\) make the **sum of the squared residuals**—the differences between the observed \\(y\\) values and the line’s predictions—as small as possible. Squaring the residuals prevents positive and negative errors from canceling each other out and gives disproportionately larger weight to larger errors, so the OLS‑chosen line best fits the data in a least‑squares sense [1].",
+            "citations": 1
+          }
+        }
+      ]
+    },
+    {
+      "name": "quiz",
+      "status": "ok",
+      "counts": {
+        "pass": 8
+      },
+      "aggregates": {
+        "judge_answer_correctness": 5,
+        "judge_distractor_quality": 5,
+        "judge_explanation_consistency": 5,
+        "judge_relevance": 5,
+        "structure_ok": 1
+      },
+      "cases": [
+        {
+          "id": "quiz-cell-01",
+          "outcome": "pass",
+          "metrics": {
+            "judge_answer_correctness": 5,
+            "judge_distractor_quality": 5,
+            "judge_explanation_consistency": 5,
+            "judge_relevance": 5,
+            "structure_ok": 1
+          },
+          "trace_id": "d138ebf5da561b4697821f1a162c4f60"
+        },
+        {
+          "id": "quiz-cell-02",
+          "outcome": "pass",
+          "metrics": {
+            "judge_answer_correctness": 5,
+            "judge_distractor_quality": 5,
+            "judge_explanation_consistency": 5,
+            "judge_relevance": 5,
+            "structure_ok": 1
+          },
+          "trace_id": "18affdcfcf5a870458a375ffce2219df"
+        },
+        {
+          "id": "quiz-net-01",
+          "outcome": "pass",
+          "metrics": {
+            "judge_answer_correctness": 5,
+            "judge_distractor_quality": 5,
+            "judge_explanation_consistency": 5,
+            "judge_relevance": 5,
+            "structure_ok": 1
+          },
+          "trace_id": "3c23e8615630ed0d00e34027a8ad4f19"
+        },
+        {
+          "id": "quiz-net-02",
+          "outcome": "pass",
+          "metrics": {
+            "judge_answer_correctness": 5,
+            "judge_distractor_quality": 5,
+            "judge_explanation_consistency": 5,
+            "judge_relevance": 5,
+            "structure_ok": 1
+          },
+          "trace_id": "6674862721a70bf1f7c5187384e609cb"
+        },
+        {
+          "id": "quiz-fr-01",
+          "outcome": "pass",
+          "metrics": {
+            "judge_answer_correctness": 5,
+            "judge_distractor_quality": 5,
+            "judge_explanation_consistency": 5,
+            "judge_relevance": 5,
+            "structure_ok": 1
+          },
+          "trace_id": "55c3e90ba7483fdbaf35f02a10ec2148"
+        },
+        {
+          "id": "quiz-fr-02",
+          "outcome": "pass",
+          "metrics": {
+            "judge_answer_correctness": 5,
+            "judge_distractor_quality": 5,
+            "judge_explanation_consistency": 5,
+            "judge_relevance": 5,
+            "structure_ok": 1
+          },
+          "trace_id": "d675277b00c055ec1357eba8b31c6572"
+        },
+        {
+          "id": "quiz-lr-01",
+          "outcome": "pass",
+          "metrics": {
+            "judge_answer_correctness": 5,
+            "judge_distractor_quality": 5,
+            "judge_explanation_consistency": 5,
+            "judge_relevance": 5,
+            "structure_ok": 1
+          },
+          "trace_id": "216f980b206ff0b8eb094486487a7eca"
+        },
+        {
+          "id": "quiz-lr-02",
+          "outcome": "pass",
+          "metrics": {
+            "judge_answer_correctness": 5,
+            "judge_distractor_quality": 5,
+            "judge_explanation_consistency": 5,
+            "judge_relevance": 5,
+            "structure_ok": 1
+          },
+          "trace_id": "7454f405a0cd0cbb6b739595ecddeb3f"
+        }
+      ]
+    },
+    {
+      "name": "flashcards",
+      "status": "ok",
+      "counts": {
+        "pass": 8
+      },
+      "aggregates": {
+        "judge_conciseness": 5,
+        "judge_consistency": 5,
+        "judge_correctness": 5,
+        "judge_coverage": 4.375,
+        "structure_ok": 1
+      },
+      "cases": [
+        {
+          "id": "cards-cell-01",
+          "outcome": "pass",
+          "metrics": {
+            "judge_conciseness": 5,
+            "judge_consistency": 5,
+            "judge_correctness": 5,
+            "judge_coverage": 3,
+            "structure_ok": 1
+          },
+          "trace_id": "cde8e8c0f0b5d6165afbf93994dd8bc0"
+        },
+        {
+          "id": "cards-cell-02",
+          "outcome": "pass",
+          "metrics": {
+            "judge_conciseness": 5,
+            "judge_consistency": 5,
+            "judge_correctness": 5,
+            "judge_coverage": 5,
+            "structure_ok": 1
+          },
+          "trace_id": "83fd430f8ba0cec7c04e5f32f02d6b89"
+        },
+        {
+          "id": "cards-net-01",
+          "outcome": "pass",
+          "metrics": {
+            "judge_conciseness": 5,
+            "judge_consistency": 5,
+            "judge_correctness": 5,
+            "judge_coverage": 5,
+            "structure_ok": 1
+          },
+          "trace_id": "7d482cb1e1b5d282741f17f7f59dcf99"
+        },
+        {
+          "id": "cards-net-02",
+          "outcome": "pass",
+          "metrics": {
+            "judge_conciseness": 5,
+            "judge_consistency": 5,
+            "judge_correctness": 5,
+            "judge_coverage": 5,
+            "structure_ok": 1
+          },
+          "trace_id": "ca66b6112d6a7d24d8511d006b67875a"
+        },
+        {
+          "id": "cards-fr-01",
+          "outcome": "pass",
+          "metrics": {
+            "judge_conciseness": 5,
+            "judge_consistency": 5,
+            "judge_correctness": 5,
+            "judge_coverage": 5,
+            "structure_ok": 1
+          },
+          "trace_id": "19f0cb56976cc53edc5fe28bb8570392"
+        },
+        {
+          "id": "cards-fr-02",
+          "outcome": "pass",
+          "metrics": {
+            "judge_conciseness": 5,
+            "judge_consistency": 5,
+            "judge_correctness": 5,
+            "judge_coverage": 3,
+            "structure_ok": 1
+          },
+          "trace_id": "fc8bbcdd21cebf1c91dd60abd98fa92c"
+        },
+        {
+          "id": "cards-lr-01",
+          "outcome": "pass",
+          "metrics": {
+            "judge_conciseness": 5,
+            "judge_consistency": 5,
+            "judge_correctness": 5,
+            "judge_coverage": 5,
+            "structure_ok": 1
+          },
+          "trace_id": "282a493e6e947c769fff351c402de3ba"
+        },
+        {
+          "id": "cards-lr-02",
+          "outcome": "pass",
+          "metrics": {
+            "judge_conciseness": 5,
+            "judge_consistency": 5,
+            "judge_correctness": 5,
+            "judge_coverage": 4,
+            "structure_ok": 1
+          },
+          "trace_id": "eef4bba75a6e7165ef4fa2e3bc0dfb9f"
+        }
+      ]
+    }
+  ],
+  "exit_code": 0
+}
