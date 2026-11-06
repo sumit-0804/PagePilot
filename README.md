@@ -103,6 +103,12 @@ cd backend && go run ./cmd/eval -suite all -judge
 
 Exit code 0 means every suite passed, 1 means one fell below a threshold or regressed, and 2 means rate limits or outages made the run inconclusive. After a deliberate change, add `-update-baseline` to save the run as the new baseline. See `backend/evaluation/README.md` for the datasets.
 
+## CI
+
+`.github/workflows/ci.yml` runs on every pull request and push to `main`, with no secrets: gofmt, `go vet` and `go test` against a local Supabase stack for the backend, then lint, tests and build for the frontend.
+
+`.github/workflows/eval.yml` runs the full judged eval every Monday at 06:00 UTC and on demand (Actions → Evals → Run workflow). Add these repository secrets: `EVAL_GROQ_API_KEY`, `EVAL_CLOUDFLARE_API_KEY` and `EVAL_CLOUDFLARE_ACCOUNT_ID` (without them the run is skipped), and optionally `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY` and `TAVILY_API_KEY`. The summary appears on the run page and the JSON report is kept as an artifact for 90 days. A regression fails the run; an inconclusive run is only a warning. A full run uses about half of Groq's free daily tokens for the agent model, so run it at most once a day.
+
 ## Changing the embedding model
 
 Vectors from different models can't be compared, so changing the model means indexing every document again. To use the Gemini standby, set `EMBEDDING_PROVIDER=gemini`, `EMBEDDING_MODEL=gemini-embedding-2`, an empty `EMBEDDING_QUERY_PREFIX` and the `EMBEDDING_RPM/TPM/RPD` limits, keep `EMBEDDING_DIM=1024`, and have users re-upload. A model with a different vector size also needs a migration that changes `document_chunks.embedding`; the API refuses to start when the two don't match.

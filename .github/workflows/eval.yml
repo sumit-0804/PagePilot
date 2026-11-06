@@ -1,0 +1,102 @@
+name: Evals
+
+on:
+  schedule:
+    - cron: "0 6 * * 1" # Mondays 06:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One run at a time: a full run uses about half of Groq's free daily tokens for the agent model.
+concurrency:
+  group: eval
+  cancel-in-progress: false
+
+jobs:
+  eval:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: backend
+    env:
+      # Eval-only keys; the eval refuses to run on production's.
+      EVAL_GROQ_API_KEY: ${{ secrets.EVAL_GROQ_API_KEY }}
+      EVAL_CLOUDFLARE_API_KEY: ${{ secrets.EVAL_CLOUDFLARE_API_KEY }}
+      EVAL_CLOUDFLARE_ACCOUNT_ID: ${{ secrets.EVAL_CLOUDFLARE_ACCOUNT_ID }}
+      # Optional: traces and scores in Langfuse, and the web_search tool case.
+      LANGFUSE_PUBLIC_KEY: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
+      LANGFUSE_SECRET_KEY: ${{ secrets.LANGFUSE_SECRET_KEY }}
+      LANGFUSE_BASE_URL: ${{ vars.LANGFUSE_BASE_URL || 'https://cloud.langfuse.com' }}
+      TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
+      # The same models and settings as production (render.yaml); there is no .env in CI.
+      GROQ_MODEL: openai/gpt-oss-120b
+      EMBEDDING_MODEL: "@cf/qwen/qwen3-embedding-0.6b"
+      EMBEDDING_DIM: "1024"
+      EMBEDDING_QUERY_PREFIX: "Instruct: Given a student's question, retrieve passages from their study documents that answer it\\nQuery:"
+      DEPLOYMENT_ENVIRONMENT: eval
+    steps:
+      - name: Check credentials
+        id: creds
+        run: |
+          if [ -z "$EVAL_GROQ_API_KEY" ] || [ -z "$EVAL_CLOUDFLARE_API_KEY" ] || [ -z "$EVAL_CLOUDFLARE_ACCOUNT_ID" ]; then
+            echo "::notice::Evals skipped: missing credentials (EVAL_GROQ_API_KEY, EVAL_CLOUDFLARE_API_KEY, EVAL_CLOUDFLARE_ACCOUNT_ID)"
+            echo "Evals skipped: missing credentials." >> "$GITHUB_STEP_SUMMARY"
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v4
+        if: steps.creds.outputs.run == 'true'
+
+      - uses: actions/setup-go@v5
+        if: steps.creds.outputs.run == 'true'
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+
+      - uses: supabase/setup-cli@v1
+        if: steps.creds.outputs.run == 'true'
+        with:
+          version: latest
+
+      - name: Start Supabase
+        if: steps.creds.outputs.run == 'true'
+        working-directory: .
+        run: supabase start -x studio,imgproxy,realtime,edge-runtime,logflare,vector
+
+      # Exit codes: 0 ok, 1 below a threshold or regressed (fails the job), 2 inconclusive (warning only).
+      - name: Run evals
+        if: steps.creds.outputs.run == 'true'
+        run: |
+          if [ -n "$TAVILY_API_KEY" ]; then export WEB_SEARCH_PROVIDER=tavily; fi
+          set +e
+          go run ./cmd/eval -suite all -judge 2>&1 | tee eval.log
+          code=${PIPESTATUS[0]}
+          set -e
+          # Setup failures (bad key, database down) also exit 2, but write no report: those must fail.
+          if [ ! -f evaluation/reports/latest.json ]; then
+            echo "::error::The eval did not get far enough to write a report (exit $code); see the log above."
+            exit 1
+          fi
+          {
+            echo '```'
+            sed -n '/^PagePilot eval  dataset/,$p' eval.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          case "$code" in
+            0) ;;
+            2) echo "::warning::Evals inconclusive: rate limits or provider errors hit too many cases; scores are not reliable." ;;
+            *) echo "::error::Evals failed: a suite is below its threshold or regressed (exit $code)."; exit "$code" ;;
+          esac
+
+      - name: Upload report
+        if: always() && steps.creds.outputs.run == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-report-${{ github.run_id }}
+          path: backend/evaluation/reports/*.json
+          if-no-files-found: warn
+          retention-days: 90
