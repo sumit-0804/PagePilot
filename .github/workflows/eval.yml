@@ -39,6 +39,7 @@ jobs:
     steps:
       - name: Check credentials
         id: creds
+        working-directory: . # backend/ does not exist until checkout
         run: |
           if [ -z "$EVAL_GROQ_API_KEY" ] || [ -z "$EVAL_CLOUDFLARE_API_KEY" ] || [ -z "$EVAL_CLOUDFLARE_ACCOUNT_ID" ]; then
             echo "::notice::Evals skipped: missing credentials (EVAL_GROQ_API_KEY, EVAL_CLOUDFLARE_API_KEY, EVAL_CLOUDFLARE_ACCOUNT_ID)"
