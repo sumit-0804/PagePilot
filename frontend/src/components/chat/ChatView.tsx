@@ -3,11 +3,13 @@ import { useNavigate } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { AnimatePresence, motion } from 'motion/react'
 import { toast } from 'sonner'
-import { ArrowDown, BookOpen, Loader2, Sparkles } from 'lucide-react'
+import { ArrowDown, BookOpen, FileUp, Loader2, Sparkles } from 'lucide-react'
 import { api, ApiError, isLoginRequired, parseFollowUps } from '@/services/api'
 import { supabase } from '@/lib/supabase'
+import { validateUpload } from '@/lib/upload'
 import { queryKeys, useDocuments } from '@/hooks/queries'
 import { useAuth } from '@/hooks/useAuth'
+import { useFileDrop } from '@/hooks/useFileDrop'
 import { useCaptcha } from '@/hooks/useCaptcha'
 import { useStudyStore } from '@/stores/useStudyStore'
 import { displayName } from '@/lib/format'
@@ -52,7 +54,7 @@ export function ChatView({
 }) {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
-  const { session, loading: authLoading, isGuest } = useAuth()
+  const { session, loading: authLoading, isGuest, isAccount } = useAuth()
   const { captcha, getCaptchaToken } = useCaptcha()
   const conversation = useQuery({
     queryKey: queryKeys.conversation(conversationId ?? ''),
@@ -110,6 +112,26 @@ export function ChatView({
     setWaitingIds((ids) => ids.filter((x) => x !== id))
     if (conversationId) detach.mutate(id)
     else setDraftIds((ids) => ids.filter((x) => x !== id))
+  }
+
+  const addWaiting = (doc: StudyDocument) => setWaitingIds((ids) => (ids.includes(doc.id) ? ids : [...ids, doc.id]))
+
+  // Dropped files take the same path as the upload dialog: validate, upload, then wait for READY.
+  function uploadDropped(files: File[]) {
+    for (const file of files) {
+      const invalid = validateUpload(file)
+      if (invalid) {
+        toast.error(`${file.name}: ${invalid}`)
+        continue
+      }
+      api.documents
+        .upload(file)
+        .then(async (doc) => {
+          await queryClient.invalidateQueries({ queryKey: queryKeys.documents })
+          addWaiting(doc)
+        })
+        .catch((err: unknown) => toast.error(`${file.name}: ${err instanceof Error ? err.message : 'Upload failed.'}`))
+    }
   }
 
   // Once an upload finishes: attach it to an existing chat, or report that it failed.
@@ -225,6 +247,9 @@ export function ChatView({
     setShowJumpBottom(false)
   }
 
+  // Mirrors the paperclip: only signed-in accounts can upload.
+  const fileDrop = useFileDrop(uploadDropped, isAccount && !loginRequired)
+
   if (conversationId && (authLoading || conversation.isLoading)) {
     return (
       <div className="flex h-full flex-col">
@@ -274,8 +299,31 @@ export function ChatView({
   const readyDocs = attachedDocs.filter((d) => d.status === 'READY')
 
   return (
-    <div className="relative flex h-full flex-col">
+    <div className="relative flex h-full flex-col" {...fileDrop.handlers}>
       <BackgroundAmbient variant="dots" className="opacity-40" />
+
+      <AnimatePresence>
+        {fileDrop.dragging && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.15 }}
+            className="pointer-events-none absolute inset-0 z-30 p-4"
+            aria-hidden
+          >
+            <div className="flex h-full flex-col items-center justify-center rounded-2xl border-2 border-dashed border-primary bg-background/75 text-center shadow-lg shadow-primary/10 backdrop-blur-sm">
+              <div className="flex size-14 items-center justify-center rounded-2xl bg-primary/15 text-primary">
+                <FileUp className="size-7" />
+              </div>
+              <p className="mt-4 font-reading text-lg font-semibold">Drop to attach to this chat</p>
+              <p className="mt-1 max-w-sm text-sm text-muted-foreground">
+                PDF, DOCX, PPTX, TXT, MD, CSV or HTML · Up to 50 MB
+              </p>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       <PageHeader
         title={conversation.data?.title}
@@ -429,7 +477,7 @@ export function ChatView({
       <UploadDialog
         open={uploadOpen}
         onOpenChange={setUploadOpen}
-        onUploaded={(doc) => setWaitingIds((ids) => (ids.includes(doc.id) ? ids : [...ids, doc.id]))}
+        onUploaded={addWaiting}
       />
       {!session && captcha}
     </div>

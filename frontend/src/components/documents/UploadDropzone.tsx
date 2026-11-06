@@ -6,10 +6,9 @@ import { api } from '@/services/api'
 import { queryKeys } from '@/hooks/queries'
 import { cn } from '@/lib/utils'
 import { UPLOAD_EXTENSIONS } from '@/lib/format'
+import { validateUpload } from '@/lib/upload'
 import { Button } from '@/components/ui/button'
 import type { StudyDocument } from '@/types'
-
-const MAX_BYTES = 50 * 1024 * 1024
 
 export function UploadDropzone({ onUploaded, compact = false }: { onUploaded: (doc: StudyDocument) => void; compact?: boolean }) {
   const inputRef = useRef<HTMLInputElement>(null)
@@ -30,17 +29,9 @@ export function UploadDropzone({ onUploaded, compact = false }: { onUploaded: (d
   function pick(files: FileList | null) {
     const file = files?.[0]
     if (!file) return
-    setError(null)
-    const name = file.name.toLowerCase()
-    if (!UPLOAD_EXTENSIONS.some((ext) => name.endsWith(ext))) {
-      setError('This file type isn’t supported. Upload a PDF, Word (.docx), PowerPoint (.pptx), TXT, Markdown, CSV or HTML file.')
-      return
-    }
-    if (file.size > MAX_BYTES) {
-      setError('This file is larger than 50 MB. Try a smaller file or split it into parts.')
-      return
-    }
-    upload.mutate(file)
+    const invalid = validateUpload(file)
+    setError(invalid)
+    if (!invalid) upload.mutate(file)
   }
 
   function onDrop(e: DragEvent) {
