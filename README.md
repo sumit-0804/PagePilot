@@ -1,10 +1,29 @@
 # PagePilot
 
-Upload a PDF and ask it questions. Every answer cites its page, and you can turn any document into quizzes, flashcards and summaries.
+An AI study assistant for your documents. Upload a file, ask questions, and get answers that cite where they came from. Turn any document into quizzes, flashcards and summaries.
 
-**Stack:** Go + Google ADK, React + Vite, Supabase (Postgres + pgvector, Auth, Storage), Groq `gpt-oss-120b` for chat, Cloudflare Workers AI (`qwen3-embedding-0.6b`) for embeddings, Gemini for OCR of scanned pages. Langfuse (traces), Sentry (errors) and GitHub Actions (tests and evals) for observability.
+**Live:** https://pagepilot.sumit0804.space
 
-**Deployed on:** Vercel (frontend), Render (API) and Supabase.
+## Features
+
+- **Many formats:** PDF, Word (.docx), PowerPoint (.pptx), Markdown, text, CSV and HTML. Scanned PDF pages are read with OCR.
+- **Cited answers:** every answer links to the part of the document it came from.
+- **AI agent with tools:** it decides when to search your documents, search the web, or make a quiz or flashcards.
+- **Study tools:** quizzes, flashcards and cached summaries.
+- **Guest mode:** try it without an account.
+- **Observability:** every AI request is a trace in Langfuse (steps, tools, tokens, timing). Errors go to Sentry with the trace ID, so an error leads straight to its trace. Thumbs up/down ratings are saved on the trace.
+- **Evals:** 72 test cases check retrieval, tool choice, answer quality, quizzes and flashcards against a saved baseline, every week in GitHub Actions.
+
+## Tech stack
+
+| Part | Tools |
+| --- | --- |
+| Backend | Go, Google ADK (agent) |
+| Frontend | React, Vite |
+| Database, auth, files | Supabase (Postgres + pgvector, Auth, Storage) |
+| AI | Groq `gpt-oss-120b` (chat), Cloudflare Workers AI `qwen3-embedding-0.6b` (embeddings), Gemini (OCR), Tavily (web search) |
+| Observability | Langfuse (traces), Sentry (errors) |
+| CI and hosting | GitHub Actions, Vercel (frontend), Render (API) |
 
 ## Architecture
 
@@ -13,67 +32,79 @@ flowchart LR
     user(["Student"]) --> app["React app<br/>Vercel"]
     app -->|"sign in"| auth
     app -->|"REST + streaming chat"| api["Go API + ADK tutor agent<br/>Render"]
-    app -.->|"signed URL to view PDF"| storage
+    app -.->|"signed URL to view files"| storage
 
     subgraph supabase["Supabase"]
         auth["Auth"]
         db[("Postgres + pgvector")]
-        storage[("Storage: pdfs")]
+        storage[("Storage")]
     end
 
     api --> db
     api --> storage
-    api -->|"chat, quizzes, summaries"| groq["Groq<br/>gpt-oss-120b"]
+    api -->|"chat, quizzes, summaries"| groq["Groq"]
     api -->|"embeddings"| cloudflare["Cloudflare<br/>Workers AI"]
     api -->|"OCR"| gemini["Gemini"]
+    api -->|"web search"| tavily["Tavily"]
     api -.->|"traces"| langfuse["Langfuse"]
     api -.->|"errors"| sentry["Sentry"]
     app -.->|"errors"| sentry
 ```
 
-A more detailed diagram is in [docs/architecture.excalidraw](docs/architecture.excalidraw) (open in [Excalidraw](https://excalidraw.com)).
-
-## Requirements
-
-- Go 1.27+, Bun 1.4+, Docker Desktop
-- A [Groq API key](https://console.groq.com/keys), a Cloudflare API token made with the **Workers AI** template (Cloudflare dashboard → My Profile → API Tokens), and a [Gemini API key](https://aistudio.google.com/apikey) for OCR
-- Optional: Langfuse and Sentry projects (everything runs without them)
+A more detailed diagram is in [docs/architecture.excalidraw](docs/architecture.excalidraw) (open it in [Excalidraw](https://excalidraw.com)).
 
 ## Setup
 
-```bash
-bun install --cwd frontend
-```
+**You need:** Go 1.27+, Bun 1.4+ and Docker Desktop, plus these free API keys:
 
-```bash
-cp .env.example .env
-```
+- [Groq API key](https://console.groq.com/keys) for chat
+- Cloudflare API token made with the **Workers AI** template (Cloudflare dashboard → My Profile → API Tokens) and your account ID, for embeddings
+- [Gemini API key](https://aistudio.google.com/apikey) for OCR
+- Optional: [Tavily key](https://app.tavily.com) for web search (or set `WEB_SEARCH_PROVIDER=none`), and Langfuse and Sentry projects. The app runs without them.
 
-Add your Groq key, Cloudflare token (`EMBEDDING_API_KEY`) and account id (in `EMBEDDING_BASE_URL`), and Gemini key to `.env`, and set the `OCR_*` rate limits from your AI Studio rate-limit page. Optionally add `GEMINI_FALLBACK_API_KEY`, a key from a second Google project that OCR switches to when the first runs out of quota.
+1. Install the frontend packages:
 
-```bash
-bunx supabase start
-```
+   ```bash
+   bun install --cwd frontend
+   ```
 
-```bash
-bunx supabase status
-```
+2. Create your settings file:
 
-Copy `PUBLISHABLE_KEY` into `SUPABASE_PUBLISHABLE_KEY` and `VITE_SUPABASE_PUBLISHABLE_KEY`, and `SECRET_KEY` into `SUPABASE_SECRET_KEY`.
+   ```bash
+   cp .env.example .env
+   ```
 
-## Run
+   Add your Groq key, Cloudflare token (`EMBEDDING_API_KEY`), Cloudflare account ID (inside `EMBEDDING_BASE_URL`) and Gemini key. Set the `OCR_*` limits from your AI Studio rate-limit page. Every setting is explained in `.env.example`.
 
-```bash
-cd backend && go run ./cmd/server
-```
+3. Start Supabase locally, then print its keys:
 
-```bash
-bun run --cwd frontend dev
-```
+   ```bash
+   bunx supabase start
+   ```
 
-Open http://localhost:5173 and create an account.
+   ```bash
+   bunx supabase status
+   ```
+
+   Copy `PUBLISHABLE_KEY` into `SUPABASE_PUBLISHABLE_KEY` and `VITE_SUPABASE_PUBLISHABLE_KEY`, and `SECRET_KEY` into `SUPABASE_SECRET_KEY`.
+
+4. Start the API:
+
+   ```bash
+   cd backend && go run ./cmd/server
+   ```
+
+5. In a second terminal, start the frontend:
+
+   ```bash
+   bun run --cwd frontend dev
+   ```
+
+Open http://localhost:5173 and create an account, or try it as a guest.
 
 ## Test
+
+The Go tests need the local Supabase stack running, but no API keys.
 
 ```bash
 cd backend && go test ./...
@@ -87,29 +118,28 @@ bun run --cwd frontend lint
 bun run --cwd frontend test
 ```
 
-```bash
-bun run --cwd frontend build
-```
+GitHub Actions runs these, plus `gofmt`, `go vet` and the frontend build, on every pull request and push to `main` (`.github/workflows/ci.yml`).
 
-The Go tests need the local Supabase stack running, but no API keys.
+## Evals
 
-## Evaluate the AI
-
-The eval runs the real retrieval, agent, quiz and flashcard code against four study documents in `backend/evaluation`, on the local database, and compares the results with the saved baseline. It runs on its own keys (`EVAL_GROQ_API_KEY`, `EVAL_CLOUDFLARE_API_KEY`, `EVAL_CLOUDFLARE_ACCOUNT_ID`), so it never uses production's daily limits, and stops starting new cases at 120k tokens (`-max-tokens`).
+The eval runs the real retrieval, agent, quiz and flashcard code on four study documents in `backend/evaluation`, then compares the results with the saved baseline. It uses its own keys (`EVAL_GROQ_API_KEY`, `EVAL_CLOUDFLARE_API_KEY`, `EVAL_CLOUDFLARE_ACCOUNT_ID`), so it never spends production's daily limits.
 
 ```bash
 cd backend && go run ./cmd/eval -suite all -judge
 ```
 
-Exit code 0 means every suite passed, 1 means one fell below a threshold or regressed, and 2 means rate limits or outages made the run inconclusive. After a deliberate change, add `-update-baseline` to save the run as the new baseline. See `backend/evaluation/README.md` for the datasets.
+Exit code 0 means everything passed, 1 means a score dropped below its threshold or the baseline, and 2 means rate limits made the run inconclusive. Add `-update-baseline` after a deliberate change to save the new results. A full run uses about half of Groq's free daily tokens, so run it at most once a day. Details are in `backend/evaluation/README.md`.
 
-## CI
+`.github/workflows/eval.yml` runs it every Monday and on demand (Actions → Evals → Run workflow). It needs the three `EVAL_*` keys as repository secrets; `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, `TAVILY_API_KEY` and a `LANGFUSE_BASE_URL` variable are optional.
 
-`.github/workflows/ci.yml` runs on every pull request and push to `main`, with no secrets: gofmt, `go vet` and `go test` against a local Supabase stack for the backend, then lint, tests and build for the frontend.
+## Notes
 
-`.github/workflows/eval.yml` runs the full judged eval every Monday at 06:00 UTC and on demand (Actions → Evals → Run workflow). Add these repository secrets: `EVAL_GROQ_API_KEY`, `EVAL_CLOUDFLARE_API_KEY` and `EVAL_CLOUDFLARE_ACCOUNT_ID` (without them the run is skipped), and optionally `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY` and `TAVILY_API_KEY`. The summary appears on the run page and the JSON report is kept as an artifact for 90 days. A regression fails the run; an inconclusive run is only a warning. A full run uses about half of Groq's free daily tokens for the agent model, so run it at most once a day.
+- Database changes are migrations in `supabase/migrations`. Apply new ones with `bunx supabase migration up`.
+- Document text is sent to Cloudflare for embeddings, and scanned pages to Gemini for OCR. On the free tier Google may use that content, so don't upload sensitive scanned files.
+- Prompts and answers are sent to Langfuse only when `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=SPAN_ONLY`. Users appear there only as a hashed ID.
 
-## Changing the embedding model
+<details>
+<summary>Changing the embedding model</summary>
 
 Vectors from different models can't be compared, so changing the model means indexing every document again. To use the Gemini standby, set `EMBEDDING_PROVIDER=gemini`, `EMBEDDING_MODEL=gemini-embedding-2`, an empty `EMBEDDING_QUERY_PREFIX` and the `EMBEDDING_RPM/TPM/RPD` limits, keep `EMBEDDING_DIM=1024`, and have users re-upload. A model with a different vector size also needs a migration that changes `document_chunks.embedding`; the API refuses to start when the two don't match.
 
@@ -120,9 +150,4 @@ The move to Cloudflare (`supabase/migrations/20261108000000_embedding_1024.sql`)
 3. Deploy the API.
 4. Empty the `pdfs` bucket in the Supabase dashboard (Storage → pdfs → Empty bucket). SQL can't delete stored files, so the old uploads stay there until you do.
 
-## Notes
-
-- Every setting is listed in `.env.example`.
-- Database changes are migrations in `supabase/migrations`. Apply new ones with `bunx supabase migration up`.
-- Document text is sent to Cloudflare Workers AI for embeddings, and scanned pages to Google's Gemini API for OCR. On the free tier Google may use that content, so don't upload sensitive scanned files.
-- Prompts and answers are not sent to Langfuse unless `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=SPAN_ONLY`; users appear there only as a hashed id.
+</details>
